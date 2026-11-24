@@ -101,6 +101,54 @@ export const api = {
   chat(id: string, message: string): Promise<{ reply: string; error?: boolean }> {
     return request(`/api/sessions/${id}/chat`, { method: 'POST', body: JSON.stringify({ message }) });
   },
+
+  /** Streaming chat over SSE (fetch + ReadableStream, since EventSource cannot send headers). */
+  async chatStream(
+    id: string,
+    message: string,
+    handlers: { onDelta: (t: string) => void; onThinking?: (t: string) => void; onTool?: (name: string) => void },
+  ): Promise<{ reply: string; toolCalls: string[] }> {
+    const token = getToken();
+    const res = await fetch(`/api/sessions/${id}/chat/stream`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+      body: JSON.stringify({ message }),
+    });
+    if (!res.ok || !res.body) {
+      let msg = `HTTP ${res.status}`;
+      try { const b = await res.json(); msg = b.error || b.message || msg; } catch { /* ignore */ }
+      throw new Error(msg);
+    }
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder('utf-8');
+    let buffer = '';
+    let final = { reply: '', toolCalls: [] as string[] };
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      let idx: number;
+      while ((idx = buffer.indexOf('\n\n')) >= 0) {
+        const frame = buffer.slice(0, idx);
+        buffer = buffer.slice(idx + 2);
+        let event = 'message';
+        const dataLines: string[] = [];
+        for (const line of frame.split('\n')) {
+          if (line.startsWith('event:')) event = line.slice(6).trim();
+          else if (line.startsWith('data:')) dataLines.push(line.slice(5).trim());
+        }
+        if (!dataLines.length) continue;
+        let payload: any;
+        try { payload = JSON.parse(dataLines.join('\n')); } catch { continue; }
+        if (event === 'delta') handlers.onDelta(payload.text);
+        else if (event === 'thinking') handlers.onThinking?.(payload.text);
+        else if (event === 'tool') handlers.onTool?.(payload.name);
+        else if (event === 'done') final = { reply: payload.reply ?? '', toolCalls: payload.toolCalls ?? [] };
+        else if (event === 'error') throw new Error(payload.message);
+      }
+    }
+    return final;
+  },
   setPermission(id: string, mode: string): Promise<any> {
     return request(`/api/sessions/${id}/permission`, { method: 'PUT', body: JSON.stringify({ mode }) });
   },

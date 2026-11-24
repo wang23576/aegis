@@ -5,11 +5,12 @@ import io.agentscope.core.event.AgentEvent;
 import io.agentscope.core.event.AgentResultEvent;
 import io.agentscope.core.event.ConfirmResult;
 import io.agentscope.core.event.RequireUserConfirmEvent;
+import io.agentscope.core.event.TextBlockDeltaEvent;
+import io.agentscope.core.event.ThinkingBlockDeltaEvent;
 import io.agentscope.core.event.ToolCallStartEvent;
 import io.agentscope.core.message.Msg;
 import io.agentscope.core.message.UserMessage;
 import io.agentscope.harness.agent.HarnessAgent;
-import reactor.core.publisher.Flux;
 import io.aegis.agent.AgentRepository;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
@@ -25,6 +26,13 @@ public class SessionService {
                           String createdAt, String updatedAt) {}
     /** Result of one chat turn: assistant text plus names of tools that actually executed. */
     public record ChatResult(String reply, List<String> toolCalls) {}
+
+    /** Streams one chat turn to the client as it happens (text deltas, thinking, tool activity). */
+    public interface ChatStreamListener {
+        default void onDelta(String text) {}
+        default void onThinkingDelta(String text) {}
+        default void onTool(String toolName) {}
+    }
 
     private final JdbcTemplate jdbc;
     private final AgentRepository agents;
@@ -78,6 +86,11 @@ public class SessionService {
      * harness isolates runtime data by (user,session) and applies permission mode.
      */
     public ChatResult chat(Session session, Long userId, String text) {
+        return chat(session, userId, text, new ChatStreamListener() {});
+    }
+
+    /** Streaming variant: forwards text deltas / thinking / tool events to the listener live. */
+    public ChatResult chat(Session session, Long userId, String text, ChatStreamListener listener) {
         HarnessAgent agent = registry.get(session.agentId());
         RuntimeContext ctx = RuntimeContext.builder()
                 .userId(String.valueOf(userId))
@@ -93,7 +106,7 @@ public class SessionService {
         }
         Msg current = Msg.builder().textContent(text).build();
         List<String> tools = new ArrayList<>();
-        Msg result = runWithAutoApprove(agent, current, ctx, tools);
+        Msg result = runWithAutoApprove(agent, current, ctx, tools, listener);
         String reply = result == null ? "" : result.getTextContent();
         return new ChatResult(reply, tools);
     }
@@ -105,36 +118,41 @@ public class SessionService {
      * trajectory view. Fits Aegis' three tiers: EXPLORE denies writes at engine level (no ASKING),
      * while ACCEPT_EDITS / BYPASS auto-approve ASKING so writes proceed.
      */
-    private Msg runWithAutoApprove(HarnessAgent agent, Msg userMsg, RuntimeContext ctx, List<String> executedTools) {
+    private Msg runWithAutoApprove(HarnessAgent agent, Msg userMsg, RuntimeContext ctx,
+                                   List<String> executedTools, ChatStreamListener listener) {
         Msg current = userMsg;
         final int maxRounds = 12;
         for (int round = 0; round < maxRounds; round++) {
-            final java.util.concurrent.atomic.AtomicReference<Msg> finalResult =
-                    new java.util.concurrent.atomic.AtomicReference<>(null);
-            final java.util.concurrent.atomic.AtomicReference<RequireUserConfirmEvent> pendingConfirm =
-                    new java.util.concurrent.atomic.AtomicReference<>(null);
-
-            Flux<AgentEvent> stream = agent.streamEvents(current, ctx);
-            stream.doOnNext(event -> {
+            Msg finalResult = null;
+            RequireUserConfirmEvent pendingConfirm = null;
+            // Blocking iteration keeps all event forwarding on the caller (servlet) thread,
+            // which makes synchronous SSE writes safe and ordered.
+            java.util.Iterator<AgentEvent> events = agent.streamEvents(current, ctx).toIterable().iterator();
+            while (events.hasNext()) {
+                AgentEvent event = events.next();
                 if (event instanceof AgentResultEvent are && are.getResult() != null) {
-                    finalResult.set(are.getResult());
+                    finalResult = are.getResult();
+                } else if (event instanceof TextBlockDeltaEvent delta && delta.getDelta() != null) {
+                    listener.onDelta(delta.getDelta());
+                } else if (event instanceof ThinkingBlockDeltaEvent thinking && thinking.getDelta() != null) {
+                    listener.onThinkingDelta(thinking.getDelta());
                 } else if (event instanceof ToolCallStartEvent tc && tc.getToolCallName() != null) {
                     executedTools.add(tc.getToolCallName());
+                    listener.onTool(tc.getToolCallName());
                 } else if (event instanceof RequireUserConfirmEvent confirm) {
-                    pendingConfirm.set(confirm);
+                    pendingConfirm = confirm;
                 }
-            }).blockLast();
+            }
 
-            RequireUserConfirmEvent confirm = pendingConfirm.get();
-            if (confirm == null) {
-                return finalResult.get();
+            if (pendingConfirm == null) {
+                return finalResult;
             }
             // Auto-approve every pending tool call, reusing the ORIGINAL ToolUseBlock.
-            List<ConfirmResult> approvals = confirm.getToolCalls().stream()
+            List<ConfirmResult> approvals = pendingConfirm.getToolCalls().stream()
                     .map(t -> new ConfirmResult(true, t))
                     .toList();
             if (approvals.isEmpty()) {
-                return finalResult.get();
+                return finalResult;
             }
             current = UserMessage.builder()
                     .metadata(Map.of(Msg.METADATA_CONFIRM_RESULTS, approvals))

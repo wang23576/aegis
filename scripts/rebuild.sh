@@ -8,6 +8,8 @@ MSYS_NO_PATHCONV=1 docker run --rm \
   -w /workspace maven:3.9-eclipse-temurin-17 \
   sh -c 'mvn -B -ntp -s /root/.m2/settings.xml -DskipTests clean package' 2>&1 | tail -6
 docker rm -f aegis-test >/dev/null 2>&1 || true
+# free port 8081 if the compose deployment is running (it owns the same port)
+docker compose down >/dev/null 2>&1 || true
 MSYS_NO_PATHCONV=1 docker run -d --name aegis-test -p 8081:8081 \
   -v 'D:\github\aegis\backend\target:/app:ro' \
   -v aegis-data:/data \

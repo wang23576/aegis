@@ -1,5 +1,13 @@
 import React, { useEffect, useRef, useState } from 'react';
+import { marked } from 'marked';
 import { api, AgentInfo, CurrentUser, Message, SessionInfo, clearToken, getToken } from './api';
+
+marked.setOptions({ gfm: true, breaks: true });
+
+/** Assistant content is markdown (like DSH); user content stays plain text. */
+function renderMarkdown(text: string): string {
+  return marked.parse(text) as string;
+}
 
 const PERMISSION_LABELS: Record<string, string> = {
   EXPLORE: '仅可查看',
@@ -72,6 +80,8 @@ function ChatView({
   const [text, setText] = useState('');
   const [busy, setBusy] = useState(false);
   const [mode, setMode] = useState(session.permissionMode);
+  const [stream, setStream] = useState<{ content: string; tool: string; phase: 'thinking' | 'tool' | 'answering' } | null>(null);
+  const partialRef = useRef('');
   const endRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -80,18 +90,39 @@ function ChatView({
   }, [session.id, session.permissionMode]);
 
   useEffect(() => { endRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [messages]);
+  // follow the tail while streaming (instant scroll, no animation spam)
+  useEffect(() => { if (stream) endRef.current?.scrollIntoView({ behavior: 'auto' }); }, [stream?.content, stream?.phase]);
 
   async function send() {
     if (!text.trim() || busy) return;
     const content = text;
-    setText(''); setBusy(true);
+    setText(''); setBusy(true); partialRef.current = '';
     setMessages(m => [...m, { role: 'user', content, toolCalls: '', createdAt: '' }]);
+    setStream({ content: '', tool: '', phase: 'thinking' });
     try {
-      const res = await api.chat(session.id, content);
-      setMessages(m => [...m, { role: 'assistant', content: res.reply, toolCalls: '', createdAt: '' }]);
+      const res = await api.chatStream(session.id, content, {
+        onDelta: d => {
+          partialRef.current += d;
+          setStream(s => s && { ...s, content: s.content + d, phase: 'answering' });
+        },
+        onThinking: () => setStream(s => s && { ...s, phase: 'thinking' }),
+        onTool: name => setStream(s => s && { ...s, tool: name, phase: 'tool' }),
+      });
+      setMessages(m => [...m, {
+        role: 'assistant',
+        content: res.reply || partialRef.current || '（无回复）',
+        toolCalls: res.toolCalls.join(', '),
+        createdAt: '',
+      }]);
     } catch (e: any) {
-      setMessages(m => [...m, { role: 'assistant', content: '[错误] ' + e.message, toolCalls: '', createdAt: '' }]);
-    } finally { setBusy(false); }
+      const partial = partialRef.current;
+      const errText = partial
+        ? partial + '\n\n[中断] ' + e.message
+        : '[错误] ' + e.message;
+      setMessages(m => [...m, { role: 'assistant', content: errText, toolCalls: '', createdAt: '' }]);
+    } finally {
+      setStream(null); setBusy(false);
+    }
   }
 
   async function changeMode(newMode: string) {
@@ -108,9 +139,30 @@ function ChatView({
         {messages.map((m, i) => (
           <div key={i} className={`msg ${m.role === 'user' ? 'user' : ''}`}>
             <div className="avatar">{m.role === 'user' ? '我' : 'AI'}</div>
-            <div className="bubble">{m.content}</div>
+            <div className="bubble">
+              {m.role === 'user'
+                ? m.content
+                : <div className="md" dangerouslySetInnerHTML={{ __html: renderMarkdown(m.content) }} />}
+            </div>
           </div>
         ))}
+        {stream && (
+          <div className="msg">
+            <div className="avatar">AI</div>
+            <div className="bubble streaming">
+              {stream.phase === 'tool' && (
+                <div className="stream-status">⚙ 正在调用工具 {stream.tool}…</div>
+              )}
+              {stream.phase === 'thinking' && !stream.content && (
+                <div className="stream-status">思考中…</div>
+              )}
+              {stream.content
+                ? <div className="md" dangerouslySetInnerHTML={{ __html: renderMarkdown(stream.content) }} />
+                : null}
+              <span className="cursor" />
+            </div>
+          </div>
+        )}
         <div ref={endRef} />
       </div>
       <div className="composer">
@@ -129,7 +181,7 @@ function ChatView({
             <select title="模型" defaultValue="default">
               <option value="default">默认模型</option>
             </select>
-            <button className="send" onClick={send} disabled={busy || !text.trim()}>{busy ? '发送中…' : '发送'}</button>
+            <button className="send" onClick={send} disabled={busy || !text.trim()}>{busy ? '回复中…' : '发送'}</button>
           </div>
         </div>
       </div>

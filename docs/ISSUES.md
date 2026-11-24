@@ -24,6 +24,19 @@
 
 ---
 
+### ISSUE-007  对话过程不流畅：阻塞式返回导致长时间无反馈
+
+- **现象**：前端发送消息后，需等待 15 秒以上才一次性显示完整回复，期间界面无任何反馈，与 DSH 的流式体验差距明显
+- **根因**：`POST /chat` 为阻塞式接口，后端用事件流聚合完再返回；前端也等完整响应后才渲染。对照 DSH：其前端用 `assistant/live-chunk` 增量渲染（消息状态 running 时持续追加文本）+ 状态提示 + 滚动跟随
+- **修复**：
+  - 后端新增 SSE 流式接口 `POST /api/sessions/{id}/chat/stream`：`SessionService.chat()` 增加 `ChatStreamListener`（onDelta/onThinkingDelta/onTool），事件消费改为阻塞迭代（servlet 线程上逐事件转发，SSE 写入安全有序）；事件：`delta`（正文增量）、`thinking`（思考增量）、`tool`（工具调用）、`done`（最终回复+工具清单）、`error`
+  - 前端 `api.chatStream()` 用 fetch + ReadableStream 解析 SSE（EventSource 无法带 Authorization 头）；发送后立即显示流式气泡：思考中/调用工具状态行 + 打字光标，正文增量追加，流式期间滚动跟随；错误时保留已收到的部分内容
+  - 原阻塞接口保留作为兼容回退
+- 状态：已修复，已关闭
+- 复测结果：curl 实测 SSE 帧序 `delta`（逐 token）→ `done`（最终回复+toolCalls）；带工具回合 `tool`（write_file）先于正文增量推送，`done.toolCalls=["write_file"]`。浏览器端到端：T+2.5s 即显示"思考中…"状态，正文增量渲染，完成后 Markdown 列表结构正确（同批补齐：claw 回复为 Markdown 格式，引入 `marked` 渲染助手消息与流式气泡，用户消息保持纯文本）。
+
+---
+
 ### ISSUE-005  多轮对话卡住：PERMISSION_ASKING 未处理（工具审批协议缺失）
 - 现象：第 1 轮对话返回空内容，第 2 轮报 `Agent is paused for human-in-the-loop confirmation... is in ASKING state`
 - 根因：`chat()` 调用 `setPermissionMode(ctx, mode)` 启用了权限引擎；ACCEPT_EDITS 档下写工具（memory_save）走到默认 ASK，进入 ASKING 状态。同步 `call().block()` 未处理审批协议，留下 dangling ASKING 状态污染下一轮

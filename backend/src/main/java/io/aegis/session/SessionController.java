@@ -2,11 +2,16 @@ package io.aegis.session;
 
 import io.aegis.agent.AgentRepository;
 import io.aegis.auth.AuthContext;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import jakarta.servlet.http.HttpServletResponse;
 import org.springframework.http.HttpStatus;
+import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.server.ResponseStatusException;
 
+import java.io.IOException;
+import java.io.PrintWriter;
 import java.util.*;
 
 /** Session CRUD + chat + trajectory. Ownership: sessions belong to creator. */
@@ -85,6 +90,60 @@ public class SessionController {
         String toolCalls = result.toolCalls().isEmpty() ? null : String.join(", ", result.toolCalls());
         sessions.saveMessage(id, "assistant", result.reply(), toolCalls);
         return ResponseEntity.ok(Map.of("reply", result.reply(), "toolCalls", result.toolCalls()));
+    }
+
+    /**
+     * Streaming chat (SSE). Events: delta (assistant text chunk), thinking (reasoning chunk),
+     * tool (tool invocation started), done (final reply + toolCalls), error. Written synchronously
+     * on the servlet thread, which matches SessionService's blocking event iteration.
+     */
+    @PostMapping(value = "/{id}/chat/stream", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
+    public void chatStream(@PathVariable String id, @RequestBody Map<String, String> body,
+                           HttpServletResponse response) throws IOException {
+        SessionService.Session s = sessions.get(id, uid())
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND));
+        String text = body.get("message");
+        if (text == null || text.isBlank()) {
+            response.sendError(400, "message required");
+            return;
+        }
+        response.setContentType("text/event-stream;charset=UTF-8");
+        response.setCharacterEncoding("UTF-8");
+        response.setHeader("Cache-Control", "no-cache");
+        response.setHeader("X-Accel-Buffering", "no");
+        PrintWriter writer = response.getWriter();
+        ObjectMapper mapper = new ObjectMapper();
+        sessions.saveMessage(id, "user", text, null);
+        try {
+            SessionService.ChatResult result = sessions.chat(s, uid(), text, new SessionService.ChatStreamListener() {
+                @Override public void onDelta(String d) {
+                    try { sendEvent(writer, mapper, "delta", Map.of("text", d)); } catch (IOException ignored) { }
+                }
+                @Override public void onThinkingDelta(String d) {
+                    try { sendEvent(writer, mapper, "thinking", Map.of("text", d)); } catch (IOException ignored) { }
+                }
+                @Override public void onTool(String tool) {
+                    try { sendEvent(writer, mapper, "tool", Map.of("name", tool)); } catch (IOException ignored) { }
+                }
+            });
+            String toolCalls = result.toolCalls().isEmpty() ? null : String.join(", ", result.toolCalls());
+            sessions.saveMessage(id, "assistant", result.reply(), toolCalls);
+            sendEvent(writer, mapper, "done",
+                    Map.of("reply", result.reply(), "toolCalls", result.toolCalls()));
+        } catch (Exception e) {
+            String err = "[Error] " + e.getClass().getSimpleName() + ": " + e.getMessage();
+            sessions.saveMessage(id, "assistant", err, null);
+            sendEvent(writer, mapper, "error", Map.of("message", err));
+        } finally {
+            writer.flush();
+        }
+    }
+
+    private static void sendEvent(PrintWriter writer, ObjectMapper mapper, String name, Object data)
+            throws IOException {
+        writer.write("event: " + name + "\n");
+        writer.write("data: " + mapper.writeValueAsString(data) + "\n\n");
+        writer.flush();
     }
 
     @GetMapping("/{id}/trajectory")
