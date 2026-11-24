@@ -16,10 +16,12 @@ public class AgentController {
 
     private final AgentRepository agents;
     private final BuiltinTools tools;
+    private final io.aegis.session.AgentRegistry registry;
 
-    public AgentController(AgentRepository agents, BuiltinTools tools) {
+    public AgentController(AgentRepository agents, BuiltinTools tools, io.aegis.session.AgentRegistry registry) {
         this.agents = agents;
         this.tools = tools;
+        this.registry = registry;
     }
 
     private AuthContext.CurrentUser cur() { return AuthContext.get(); }
@@ -77,10 +79,11 @@ public class AgentController {
             return ResponseEntity.badRequest().body(Map.of("error", "agent id exists"));
         }
         agents.create(id, name, body.getOrDefault("description", ""), c.id, false,
-                body.getOrDefault("sysPrompt", "You are a helpful assistant."),
+                body.getOrDefault("sysPrompt", "你是一个乐于助人的通用助手。"),
                 body.getOrDefault("toolsJson", AgentRepository.DEFAULT_TOOLS_JSON),
                 body.get("model"));
-        ensureWorkspace(id, body.getOrDefault("sysPrompt", "You are a helpful assistant."));
+        ensureWorkspace(id, body.getOrDefault("sysPrompt", "你是一个乐于助人的通用助手。"),
+                body.getOrDefault("toolsJson", AgentRepository.DEFAULT_TOOLS_JSON));
         return ResponseEntity.ok(toDto(agents.findById(id).orElseThrow()));
     }
 
@@ -88,12 +91,17 @@ public class AgentController {
     public ResponseEntity<?> update(@PathVariable String id, @RequestBody Map<String, String> body) {
         Agent a = agents.findById(id).orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND));
         if (!canManage(a)) throw new ResponseStatusException(HttpStatus.FORBIDDEN);
+        String sysPrompt = body.getOrDefault("sysPrompt", a.sysPrompt == null ? "" : a.sysPrompt);
+        String toolsJson = body.getOrDefault("toolsJson", a.toolsJson == null ? AgentRepository.DEFAULT_TOOLS_JSON : a.toolsJson);
         agents.update(id,
                 body.getOrDefault("name", a.name),
                 body.getOrDefault("description", a.description == null ? "" : a.description),
-                body.getOrDefault("sysPrompt", a.sysPrompt == null ? "" : a.sysPrompt),
-                body.getOrDefault("toolsJson", a.toolsJson == null ? AgentRepository.DEFAULT_TOOLS_JSON : a.toolsJson),
+                sysPrompt,
+                toolsJson,
                 body.containsKey("model") ? body.get("model") : a.model);
+        // rewrite AGENTS.md so prompt/behavior edits take effect in the workspace on next session
+        ensureWorkspace(id, sysPrompt, toolsJson);
+        registry.invalidate(id);
         return ResponseEntity.ok(toDto(agents.findById(id).orElseThrow()));
     }
 
@@ -119,15 +127,11 @@ public class AgentController {
         return ResponseEntity.ok(Map.of("toolsJson", a.toolsJson == null ? AgentRepository.DEFAULT_TOOLS_JSON : a.toolsJson));
     }
 
-    private void ensureWorkspace(String id, String sysPrompt) {
+    private void ensureWorkspace(String id, String sysPrompt, String toolsJson) {
         try {
             String root = System.getenv().getOrDefault("AEGIS_WORKSPACE_ROOT", "./data/workspaces");
             java.nio.file.Path ws = java.nio.file.Path.of(root, id);
-            java.nio.file.Files.createDirectories(ws.resolve("skills"));
-            java.nio.file.Files.createDirectories(ws.resolve("subagents"));
-            java.nio.file.Files.createDirectories(ws.resolve("memory"));
-            java.nio.file.Files.writeString(ws.resolve("AGENTS.md"), "# " + id + "\n\n" + sysPrompt + "\n");
-            java.nio.file.Files.writeString(ws.resolve("tools.json"), AgentRepository.DEFAULT_TOOLS_JSON);
+            WorkspaceScaffold.ensure(ws, id, sysPrompt, toolsJson);
         } catch (Exception e) {
             throw new RuntimeException("failed to create workspace for agent " + id, e);
         }

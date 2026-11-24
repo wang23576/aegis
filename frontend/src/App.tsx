@@ -189,25 +189,181 @@ function ChatView({
   );
 }
 
+interface ToolRec { name: string; args: string; result: string; startedAt: number; durationMs: number; error: boolean }
+
+interface TrajRow {
+  kind: 'user' | 'message' | 'tool';
+  turn: number;
+  text: string;            // single-line summary
+  detail: string;          // full content for the inspector
+  result?: string;         // tool result preview (inline second column)
+  rec?: ToolRec;           // tool record for inspector tabs
+  createdAt: string;
+  durationMs?: number;     // assistant turn duration
+}
+
+function fmtMs(ms: number): string {
+  if (ms == null) return '—';
+  if (ms >= 1000) return (ms / 1000).toFixed(ms < 10000 ? 2 : 0) + ' 秒';
+  return ms + ' 毫秒';
+}
+
 function TrajectoryView({ sessionId }: { sessionId: string }) {
   const [data, setData] = useState<any>(null);
-  useEffect(() => { api.trajectory(sessionId).then(setData).catch(() => setData(null)); }, [sessionId]);
-  if (!data) return <div className="traj">加载轨迹中…</div>;
+  const [collapsedTurns, setCollapsedTurns] = useState<Set<number>>(new Set());
+  const [selected, setSelected] = useState<number | null>(null);
+  const [query, setQuery] = useState('');
+  useEffect(() => {
+    setSelected(null); setQuery(''); setCollapsedTurns(new Set());
+    api.trajectory(sessionId).then(setData).catch(() => setData(null));
+  }, [sessionId]);
+
+  if (!data) return <div className="traj"><div className="traj-loading">加载轨迹中…</div></div>;
+
+  // Build DSH-style rows: turn → (user | assistant message | tool calls)
+  const rows: TrajRow[] = [];
+  let turn = 0;
+  for (const m of data.messages as any[]) {
+    if (m.role === 'user') {
+      turn++;
+      rows.push({ kind: 'user', turn, text: m.content?.replace(/\s+/g, ' ').trim() || '(空)', detail: m.content || '', createdAt: m.createdAt });
+      continue;
+    }
+    rows.push({ kind: 'message', turn, text: m.content?.replace(/\s+/g, ' ').trim() || '(无文本回复)', detail: m.content || '', createdAt: m.createdAt });
+    let tools: ToolRec[] = [];
+    try {
+      const tc = typeof m.toolCalls === 'string' && m.toolCalls ? JSON.parse(m.toolCalls) : null;
+      if (tc?.tools) tools = tc.tools;
+    } catch { /* legacy comma format */ }
+    for (const t of tools) {
+      const args = typeof t.args === 'string' ? t.args.replace(/\s+/g, ' ').trim() : '';
+      const result = typeof t.result === 'string' ? t.result.replace(/\s+/g, ' ').trim() : '';
+      rows.push({
+        kind: 'tool', turn,
+        text: t.name + (args ? ' ' + args : ''),
+        detail: t.name + (t.args ? '\n\n' + t.args : ''),
+        result: result || undefined,
+        rec: t, createdAt: m.createdAt,
+        durationMs: t.durationMs,
+      });
+    }
+  }
+  // per-turn summary data for collapsed rows
+  const turnSummaries = new Map<number, { steps: number; tools: number }>();
+  for (const r of rows) {
+    const s = turnSummaries.get(r.turn) || { steps: 0, tools: 0 };
+    s.steps++; if (r.kind === 'tool') s.tools++;
+    turnSummaries.set(r.turn, s);
+  }
+
+  const q = query.trim().toLowerCase();
+  const matches = (r: TrajRow) =>
+    !q || r.text.toLowerCase().includes(q) || (r.result || '').toLowerCase().includes(q) || (r.detail || '').toLowerCase().includes(q);
+
+  const totalMs = (data.durationMs as number) || 0;
+  const sel = selected != null ? rows[selected] : null;
+
+  const kindLabel = { user: '用户', message: '助手', tool: '工具' } as const;
+  const renderRow = (r: TrajRow, i: number, asSummary = false) => (
+    <tr key={asSummary ? `s${i}` : i}
+        data-kind={asSummary ? 'summary' : r.kind}
+        data-selected={selected === i || undefined}
+        data-error={r.rec?.error || undefined}
+        className={asSummary ? 'summary-row' : (selected === i ? 'selected-row' : '')}
+        onClick={() => !asSummary && setSelected(i)}>
+      <td className="traj-event">
+        <span className="turn-rail" />
+        {r.turn > 0 && (i === 0 || rows[i - 1].turn !== r.turn) && <span className="turn-label">第 {r.turn} 轮</span>}
+        {!asSummary && <span className={`kind-chip chip-${r.kind}`}>{kindLabel[r.kind]}</span>}
+      </td>
+      <td className="traj-content">
+        {asSummary
+          ? `… ${turnSummaries.get(r.turn)?.steps || 0} 个步骤 · ${turnSummaries.get(r.turn)?.tools || 0} 个工具调用`
+          : r.kind === 'tool'
+            ? <span className="tool-line">
+                <span className="tool-call">{r.text.slice(0, 160)}</span>
+                {r.result && <span className={'tool-result' + (r.rec?.error ? ' is-error' : '')}>→ {r.result.slice(0, 120)}</span>}
+              </span>
+            : <span className="content-text">{r.text.slice(0, 200)}</span>}
+      </td>
+    </tr>
+  );
+
+  const rendered: React.ReactNode[] = [];
+  let lastTurn = -1;
+  rows.forEach((r, i) => {
+    const turnStart = r.turn !== lastTurn;
+    lastTurn = r.turn;
+    if (turnStart && collapsedTurns.has(r.turn)) {
+      rendered.push(renderRow(r, i, true));
+      return;
+    }
+    if (!matches(r)) {
+      rendered.push(
+        <tr key={i} data-kind={r.kind} className="dimmed-row">
+          <td className="traj-event"><span className="turn-rail" /></td>
+          <td className="traj-content"><span className="content-text">{r.text.slice(0, 160)}</span></td>
+        </tr>
+      );
+      return;
+    }
+    rendered.push(renderRow(r, i));
+  });
+
   return (
     <div className="traj">
-      <div className="traj-stats">
-        <div className="stat"><div className="v">{data.turns}</div><div className="l">轮次</div></div>
-        <div className="stat"><div className="v">{data.toolCalls}</div><div className="l">工具调用</div></div>
-        <div className="stat"><div className="v">{data.messages?.length || 0}</div><div className="l">消息数</div></div>
-      </div>
-      <h3 style={{ marginBottom: 12, fontSize: 15 }}>执行轨迹</h3>
-      {data.messages?.map((m: any, i: number) => (
-        <div className="traj-row" key={i}>
-          <span className="role">{m.role === 'user' ? '用户' : '助手'}</span>
-          <span className="t">{m.createdAt}</span>
-          <div style={{ marginTop: 4, color: '#666', whiteSpace: 'pre-wrap' }}>{m.content?.slice(0, 300)}</div>
+      <div className="traj-toolbar">
+        <div className="traj-actions">
+          <span className="traj-stat" title="会话累计耗时（含工具执行）">⏱ {fmtMs(totalMs)}</span>
+          <span className="traj-stat">{data.turns} 轮</span>
+          <span className="traj-stat">{data.toolCalls} 次调用</span>
+          <button className="traj-toggle" onClick={() =>
+            setCollapsedTurns(collapsedTurns.size ? new Set() : new Set(turnSummaries.keys()))}>
+            {collapsedTurns.size ? '⊞ 展开轮次' : '⊟ 折叠轮次'}
+          </button>
         </div>
-      ))}
+        <input className="traj-search" type="search" placeholder="搜索轨迹…"
+               value={query} onChange={e => setQuery(e.target.value)} />
+      </div>
+      <div className={'traj-ledger' + (sel ? ' with-details' : '')}>
+        <div className="traj-table-wrap">
+          <table className="traj-table">
+            <colgroup><col className="event-col" /><col /></colgroup>
+            <tbody>{rendered}</tbody>
+          </table>
+        </div>
+        {sel && (
+          <aside className="traj-details">
+            <div className="details-head">
+              <span className={`kind-chip chip-${sel.kind}`}>{kindLabel[sel.kind]}</span>
+              <span className="details-time">{sel.createdAt}</span>
+              <button className="details-close" onClick={() => setSelected(null)}>✕</button>
+            </div>
+            <div className="details-body">
+              {sel.kind === 'tool' && sel.rec ? (
+                <>
+                  <div className="details-tab">概述</div>
+                  <dl className="kv">
+                    <dt>工具</dt><dd className="mono">{sel.rec.name}</dd>
+                    <dt>耗时</dt><dd>{fmtMs(sel.rec.durationMs)}</dd>
+                    <dt>状态</dt><dd className={sel.rec.error ? 'err' : 'ok'}>{sel.rec.error ? '失败' : '完成'}</dd>
+                  </dl>
+                  <div className="details-tab">参数</div>
+                  <pre className="payload">{sel.rec.args || '(无参数)'}</pre>
+                  <div className="details-tab">结果</div>
+                  <pre className={'payload' + (sel.rec.error ? ' error-payload' : '')}>{sel.rec.result || '(无输出)'}</pre>
+                </>
+              ) : (
+                <>
+                  <div className="details-tab">{sel.kind === 'user' ? '用户消息' : '助手回复'}</div>
+                  {sel.durationMs != null && <div className="details-duration">耗时 {fmtMs(sel.durationMs)}</div>}
+                  <pre className="payload">{sel.detail || '(空)'}</pre>
+                </>
+              )}
+            </div>
+          </aside>
+        )}
+      </div>
     </div>
   );
 }

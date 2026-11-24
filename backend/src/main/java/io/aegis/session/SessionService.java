@@ -7,10 +7,14 @@ import io.agentscope.core.event.ConfirmResult;
 import io.agentscope.core.event.RequireUserConfirmEvent;
 import io.agentscope.core.event.TextBlockDeltaEvent;
 import io.agentscope.core.event.ThinkingBlockDeltaEvent;
+import io.agentscope.core.event.ToolCallDeltaEvent;
 import io.agentscope.core.event.ToolCallStartEvent;
+import io.agentscope.core.event.ToolResultEndEvent;
+import io.agentscope.core.event.ToolResultTextDeltaEvent;
 import io.agentscope.core.message.Msg;
 import io.agentscope.core.message.UserMessage;
 import io.agentscope.harness.agent.HarnessAgent;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import io.aegis.agent.AgentRepository;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
@@ -24,8 +28,11 @@ public class SessionService {
     public record Message(String role, String content, String toolCalls, String createdAt) {}
     public record Session(String id, String agentId, Long userId, String title, String permissionMode,
                           String createdAt, String updatedAt) {}
-    /** Result of one chat turn: assistant text plus names of tools that actually executed. */
-    public record ChatResult(String reply, List<String> toolCalls) {}
+    /** One executed tool call, captured from the event stream (DSH-style trajectory record). */
+    public record ToolCallRecord(String name, String args, String result, long startedAt,
+                                 long durationMs, boolean error) {}
+    /** Result of one chat turn: assistant text, tool names (simple), structured trajectory JSON, wall duration. */
+    public record ChatResult(String reply, List<String> toolCalls, String toolCallsJson, long durationMs) {}
 
     /** Streams one chat turn to the client as it happens (text deltas, thinking, tool activity). */
     public interface ChatStreamListener {
@@ -105,23 +112,71 @@ public class SessionService {
             // ignore invalid mode, harness default applies
         }
         Msg current = Msg.builder().textContent(text).build();
-        List<String> tools = new ArrayList<>();
-        Msg result = runWithAutoApprove(agent, current, ctx, tools, listener);
+        long t0 = System.currentTimeMillis();
+        List<ToolCallRecord> records = new ArrayList<>();
+        Msg result = runWithAutoApprove(agent, current, ctx, records, listener);
+        long durationMs = System.currentTimeMillis() - t0;
         String reply = result == null ? "" : result.getTextContent();
-        return new ChatResult(reply, tools);
+        List<String> names = records.stream().map(ToolCallRecord::name).toList();
+        return new ChatResult(reply, names, toolCallsJson(records, durationMs), durationMs);
+    }
+
+    /** Serializes tool call records + wall duration into the JSON stored on the assistant message. */
+    private String toolCallsJson(List<ToolCallRecord> records, long durationMs) {
+        if (records.isEmpty()) {
+            return null;
+        }
+        try {
+            ObjectMapper mapper = new ObjectMapper();
+            List<Map<String, Object>> tools = new ArrayList<>();
+            for (ToolCallRecord r : records) {
+                Map<String, Object> m = new LinkedHashMap<>();
+                m.put("name", r.name());
+                m.put("args", truncate(r.args()));
+                m.put("result", truncate(r.result()));
+                m.put("startedAt", r.startedAt());
+                m.put("durationMs", r.durationMs());
+                m.put("error", r.error());
+                tools.add(m);
+            }
+            Map<String, Object> root = new LinkedHashMap<>();
+            root.put("tools", tools);
+            root.put("durationMs", durationMs);
+            return mapper.writeValueAsString(root);
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    private static String truncate(String s) {
+        if (s == null) return "";
+        return s.length() <= 8000 ? s : s.substring(0, 8000) + "…(truncated)";
+    }
+
+    /** Mutable accumulator for one in-flight tool call (keyed by toolCallId). */
+    private static class CallAcc {
+        final String name;
+        final long startedAt = System.currentTimeMillis();
+        final StringBuilder args = new StringBuilder();
+        final StringBuilder result = new StringBuilder();
+        Long endedAt;
+        boolean error;
+
+        CallAcc(String name) { this.name = name; }
     }
 
     /**
      * Drives a synchronous conversation via the event stream, auto-approving tool calls that land
      * in PERMISSION_ASKING. Mirrors agentscope's PlanModeAutoExample. Event stream (not blocking
-     * call()) is used so tool invocation names (ToolCallStartEvent) can be captured for the
-     * trajectory view. Fits Aegis' three tiers: EXPLORE denies writes at engine level (no ASKING),
-     * while ACCEPT_EDITS / BYPASS auto-approve ASKING so writes proceed.
+     * call()) is used so the full tool-call lifecycle (name, args, result, duration, error) can be
+     * captured for the DSH-style trajectory view. Fits Aegis' three tiers: EXPLORE denies writes
+     * at engine level (no ASKING), while ACCEPT_EDITS / BYPASS auto-approve ASKING so writes proceed.
      */
     private Msg runWithAutoApprove(HarnessAgent agent, Msg userMsg, RuntimeContext ctx,
-                                   List<String> executedTools, ChatStreamListener listener) {
+                                   List<ToolCallRecord> executedTools, ChatStreamListener listener) {
         Msg current = userMsg;
         final int maxRounds = 12;
+        Map<String, CallAcc> pendingCalls = new LinkedHashMap<>();
         for (int round = 0; round < maxRounds; round++) {
             Msg finalResult = null;
             RequireUserConfirmEvent pendingConfirm = null;
@@ -137,12 +192,29 @@ public class SessionService {
                 } else if (event instanceof ThinkingBlockDeltaEvent thinking && thinking.getDelta() != null) {
                     listener.onThinkingDelta(thinking.getDelta());
                 } else if (event instanceof ToolCallStartEvent tc && tc.getToolCallName() != null) {
-                    executedTools.add(tc.getToolCallName());
+                    pendingCalls.put(tc.getToolCallId(), new CallAcc(tc.getToolCallName()));
                     listener.onTool(tc.getToolCallName());
+                } else if (event instanceof ToolCallDeltaEvent td && pendingCalls.containsKey(td.getToolCallId())
+                        && td.getDelta() != null) {
+                    pendingCalls.get(td.getToolCallId()).args.append(td.getDelta());
+                } else if (event instanceof ToolResultTextDeltaEvent trd
+                        && pendingCalls.containsKey(trd.getToolCallId()) && trd.getDelta() != null) {
+                    pendingCalls.get(trd.getToolCallId()).result.append(trd.getDelta());
+                } else if (event instanceof ToolResultEndEvent te && pendingCalls.containsKey(te.getToolCallId())) {
+                    CallAcc acc = pendingCalls.get(te.getToolCallId());
+                    acc.endedAt = System.currentTimeMillis();
+                    acc.error = te.getState() != null && te.getState().name().contains("ERROR");
                 } else if (event instanceof RequireUserConfirmEvent confirm) {
                     pendingConfirm = confirm;
                 }
             }
+            // harvest completed calls of this round, in invocation order
+            for (CallAcc acc : pendingCalls.values()) {
+                long dur = acc.endedAt == null ? System.currentTimeMillis() - acc.startedAt : acc.endedAt - acc.startedAt;
+                executedTools.add(new ToolCallRecord(acc.name, acc.args.toString(), acc.result.toString(),
+                        acc.startedAt, dur, acc.error));
+            }
+            pendingCalls.clear();
 
             if (pendingConfirm == null) {
                 return finalResult;
@@ -161,14 +233,25 @@ public class SessionService {
         throw new IllegalStateException("Too many PERMISSION_ASKING rounds (possible tool loop)");
     }
 
-    /** Trajectory summary derived from stored messages. */
+    /** Trajectory summary derived from stored messages (tool_calls holds structured JSON). */
     public Map<String, Object> trajectory(String sessionId) {
         List<Message> msgs = messages(sessionId);
         int turns = 0, toolCalls = 0;
+        long totalMs = 0;
         for (Message m : msgs) {
             if ("user".equals(m.role())) turns++;
             if (m.toolCalls() != null && !m.toolCalls().isBlank()) {
-                toolCalls += m.toolCalls().split(",").length;
+                try {
+                    var root = new com.fasterxml.jackson.databind.ObjectMapper().readTree(m.toolCalls());
+                    if (root.has("tools") && root.get("tools").isArray()) {
+                        toolCalls += root.get("tools").size();
+                    }
+                    if (root.has("durationMs")) {
+                        totalMs += root.get("durationMs").asLong();
+                    }
+                } catch (Exception ignored) {
+                    toolCalls++; // legacy comma-joined format
+                }
             }
         }
         Session s = jdbc.query("SELECT * FROM chat_session WHERE id=?", SESSION_MAP, sessionId).get(0);
@@ -176,9 +259,11 @@ public class SessionService {
         result.put("sessionId", sessionId);
         result.put("turns", turns);
         result.put("toolCalls", toolCalls);
+        result.put("durationMs", totalMs);
         result.put("messages", msgs.stream().map(m -> Map.<String,Object>of(
-                "role", m.role(), "content", m.content(), "toolCalls", m.toolCalls() == null ? "" : m.toolCalls(),
-                "createdAt", m.createdAt())).toList());
+                "role", m.role(), "content", m.content() == null ? "" : m.content(),
+                "toolCalls", m.toolCalls() == null ? "" : m.toolCalls(),
+                "createdAt", m.createdAt() == null ? "" : m.createdAt())).toList());
         result.put("createdAt", s.createdAt());
         return result;
     }

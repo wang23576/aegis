@@ -40,22 +40,16 @@ public class DataBootstrap {
 
         // 2. builtin claw agent owned by admin
         if (agents.findById("claw").isEmpty()) {
-            agents.create("claw", "claw", "Built-in general assistant", admin.id, true,
-                    "You are a helpful assistant. Answer accurately and concisely.",
+            agents.create("claw", "claw", "内置通用助手", admin.id, true,
+                    "你是 claw，Aegis 平台的内置通用助手。请准确、简洁地回答问题，并遵循 AGENTS.md 中的语言与工具使用规则。",
                     AgentRepository.DEFAULT_TOOLS_JSON, null);
         }
 
-        // 3. workspace scaffold for claw
+        // 3. workspace scaffold for claw (AGENTS.md carries language + tool-usage rules)
         String wsRoot = System.getenv().getOrDefault("AEGIS_WORKSPACE_ROOT", "./data/workspaces");
         Path clawWs = Path.of(wsRoot, "claw");
-        Files.createDirectories(clawWs.resolve("skills/example-skill"));
-        Files.createDirectories(clawWs.resolve("subagents"));
-        Files.createDirectories(clawWs.resolve("memory"));
-        Files.writeString(clawWs.resolve("AGENTS.md"),
-                "# claw\n\nYou are a helpful assistant. Answer accurately and concisely.\n");
-        Files.writeString(clawWs.resolve("tools.json"), AgentRepository.DEFAULT_TOOLS_JSON);
-        Files.writeString(clawWs.resolve("skills/example-skill/SKILL.md"),
-                "# Example skill\n\nA starter placeholder skill.\n");
-        Files.writeString(clawWs.resolve("subagents/README.md"), "# Subagents\n\nSub-agent definitions go here.\n");
+        io.aegis.agent.WorkspaceScaffold.ensure(clawWs, "claw",
+                "你是 claw，Aegis 平台的内置通用助手。请准确、简洁地回答问题，并遵循 AGENTS.md 中的语言与工具使用规则。",
+                AgentRepository.DEFAULT_TOOLS_JSON);
     }
 }

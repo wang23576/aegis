@@ -87,8 +87,7 @@ public class SessionController {
             sessions.saveMessage(id, "assistant", reply, null);
             return ResponseEntity.ok(Map.of("reply", reply, "error", true));
         }
-        String toolCalls = result.toolCalls().isEmpty() ? null : String.join(", ", result.toolCalls());
-        sessions.saveMessage(id, "assistant", result.reply(), toolCalls);
+        sessions.saveMessage(id, "assistant", result.reply(), result.toolCallsJson());
         return ResponseEntity.ok(Map.of("reply", result.reply(), "toolCalls", result.toolCalls()));
     }
 
@@ -126,8 +125,7 @@ public class SessionController {
                     try { sendEvent(writer, mapper, "tool", Map.of("name", tool)); } catch (IOException ignored) { }
                 }
             });
-            String toolCalls = result.toolCalls().isEmpty() ? null : String.join(", ", result.toolCalls());
-            sessions.saveMessage(id, "assistant", result.reply(), toolCalls);
+            sessions.saveMessage(id, "assistant", result.reply(), result.toolCallsJson());
             sendEvent(writer, mapper, "done",
                     Map.of("reply", result.reply(), "toolCalls", result.toolCalls()));
         } catch (Exception e) {

@@ -11,6 +11,35 @@
 
 ---
 
+### ISSUE-008  claw 凭记忆回答目录问题 + 回复偶发英文
+- 发现时间：2026-11-24（Alan 实测反馈）
+- 现象：问 claw"你能查到哪些目录和文件"，它先从记忆里找答案返回（且记忆含早期错误快照），经用户追问才真实调用工具；回复偶尔整段切换英文
+- 根因：claw workspace 的 AGENTS.md 仅一句英文提示词（"You are a helpful assistant..."），无语言约束、无工具使用规范；且 MEMORY.md 已被污染——早期错误条目（aegis.jar 双目录误判）靠 memory_save 反复"追加更正"，错误内容仍在库中被 memory_search 命中
+- 修复：
+  1. 新增 `WorkspaceScaffold` 统一脚手架：AGENTS.md = 人设 + 语言要求（始终简体中文）+ 工具使用规则（当前实际状态必须真实调工具查询、记忆只用于用户偏好和历史事实、不确定先查、失败如实告知）；DataBootstrap 种子与 AgentController 创建/更新智能体均改用它，PUT 更新时同步重写 AGENTS.md 并 invalidate agent 实例
+  2. claw 的 DB sys_prompt 与 workspace AGENTS.md 通过 API 更新为中文版
+  3. 清理被污染记忆：MEMORY.md 重置、memory/ 清空（原文件备份为 `MEMORY.md.polluted.bak`）
+- 状态：已关闭
+- 复测结果：同样提问"你能查到哪些目录和文件"，claw 真实调用 `list_files` ×2（两个根目录），全程简体中文回复实时数据；第二轮问"我刚才让你查了几个目录"正确回答 2 个（上下文记忆正常，未污染）。
+
+---
+
+### ISSUE-009  轨迹页与 DSH 完全不一致（按 DSH 完全重做）
+- 发现时间：2026-11-24（Alan 实测反馈）
+- 现象：原轨迹页只是"统计卡片 + 角色列表"，与 DSH 的台账式轨迹差距大
+- 修复（按 DSH 信息架构 1:1 复刻）：
+  1. 后端：`runWithAutoApprove` 捕获工具调用全生命周期（`ToolCallStartEvent` 起、`ToolCallDeltaEvent` 累积参数、`ToolResultTextDeltaEvent` 累积结果、`ToolResultEndEvent` 定状态/耗时），`tool_calls` 字段改存结构化 JSON（name/args/result/startedAt/durationMs/error + durationMs 总耗时）；trajectory 接口返回结构化数据
+  2. 前端 DSH 式台账：
+     - 32px sticky 工具栏：⏱总时长 / 轮次 / 调用次数 统计 + 折叠轮次开关 + 右侧搜索框（非命中行淡化 24%）
+     - fixed 表格：事件列（kind 彩色 chip：用户=蓝、助手=紫、工具=琥珀；轮次竖轨 + "第 N 轮"角标）+ 内容列
+     - 工具行等宽字体 `工具名 参数` 单行省略，有结果时 `调用 → 结果` 双栏 grid（错误红色）
+     - 轮次折叠：摘要行 `… N 个步骤 · N 个工具调用`，可一键折叠/展开
+     - 点击行打开右侧详情面板：概述（工具/耗时/状态）+ 参数/结果 pre 块；助手行显示全文与耗时
+- 状态：已关闭
+- 复测结果：浏览器实测——2 个轮次标签正确、折叠摘要行内容正确、搜索 list_files 命中 2 行其余淡化、工具行详情面板完整显示参数 JSON 与逐文件结果。截图目检布局整洁无错乱。
+
+---
+
 ### ISSUE-006  轨迹「工具调用数」恒为 0（展示不准确）
 - 现象：轨迹标签显示"工具调用 0"，但实际工具（如 write_file）已执行
 - 根因：`chat()` 只返回回复文本，工具调用信息丢弃；`tool_calls` 字段从未写入，统计逻辑只按"字段非空的行数"计数
