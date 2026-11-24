@@ -83,20 +83,45 @@ function ChatView({
   const [stream, setStream] = useState<{ content: string; tool: string; phase: 'thinking' | 'tool' | 'answering' } | null>(null);
   const partialRef = useRef('');
   const endRef = useRef<HTMLDivElement>(null);
+  // Only follow the tail while the user is pinned near the bottom; never steal
+  // scroll position when they scroll up to read history during streaming.
+  const areaRef = useRef<HTMLDivElement>(null);
+  const pinnedRef = useRef(true);
+  const [showJump, setShowJump] = useState(false);
 
   useEffect(() => {
     api.getMessages(session.id).then(setMessages).catch(() => setMessages([]));
     setMode(session.permissionMode);
+    pinnedRef.current = true;
+    setShowJump(false);
   }, [session.id, session.permissionMode]);
 
-  useEffect(() => { endRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [messages]);
+  function onAreaScroll() {
+    const el = areaRef.current;
+    if (!el) return;
+    const dist = el.scrollHeight - el.scrollTop - el.clientHeight;
+    pinnedRef.current = dist < 80;
+    setShowJump(dist > 200 && !pinnedRef.current);
+  }
+
+  useEffect(() => { if (pinnedRef.current) endRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [messages]);
   // follow the tail while streaming (instant scroll, no animation spam)
-  useEffect(() => { if (stream) endRef.current?.scrollIntoView({ behavior: 'auto' }); }, [stream?.content, stream?.phase]);
+  useEffect(() => {
+    if (!stream) return;
+    if (pinnedRef.current) {
+      endRef.current?.scrollIntoView({ behavior: 'auto' });
+    } else {
+      // content grows without scroll events firing — refresh the jump button visibility
+      const el = areaRef.current;
+      if (el) setShowJump(el.scrollHeight - el.scrollTop - el.clientHeight > 200);
+    }
+  }, [stream?.content, stream?.phase]);
 
   async function send() {
     if (!text.trim() || busy) return;
     const content = text;
     setText(''); setBusy(true); partialRef.current = '';
+    pinnedRef.current = true; setShowJump(false);
     setMessages(m => [...m, { role: 'user', content, toolCalls: '', createdAt: '' }]);
     setStream({ content: '', tool: '', phase: 'thinking' });
     try {
@@ -134,7 +159,15 @@ function ChatView({
 
   return (
     <>
-      <div className="chat-area">
+      <div className="chat-area" ref={areaRef} onScroll={onAreaScroll}>
+        {showJump && (
+          <button
+            className="jump-bottom"
+            onClick={() => { pinnedRef.current = true; setShowJump(false); endRef.current?.scrollIntoView({ behavior: 'smooth' }); }}
+          >
+            ↓ 回到底部
+          </button>
+        )}
         {messages.length === 0 && <div style={{ color: '#aaa', textAlign: 'center', marginTop: 60 }}>开始对话吧 · 智能体：{agent?.name || session.agentId}</div>}
         {messages.map((m, i) => (
           <div key={i} className={`msg ${m.role === 'user' ? 'user' : ''}`}>

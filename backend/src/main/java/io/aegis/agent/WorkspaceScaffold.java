@@ -38,6 +38,12 @@ public final class WorkspaceScaffold {
                 - 长期记忆（memory_search）只用于回忆**用户偏好和历史事实**（例如用户的称呼、代号、既往约定）。记忆中的环境/文件快照会过时，一律以工具实时查询结果为准，不要把记忆里的目录快照当作现状。
                 - 不确定就先查：列目录用 list_files，读文件用 read_file，搜内容用 grep_files，执行命令用 execute，联网查资料用 web_search / web_fetch。
                 - 工具查询失败或结果为空时，如实告知用户，不要编造结果。
+
+                ## 工具输出解读约定（重要）
+
+                - `list_files` 输出中以 `/` 开头的条目（例如 `/aegis.jar`）**不是**所列目录里的真实文件：它们是运行时把项目目录（`/app`）的内容以虚拟路径形式合并显示出来的结果，实际文件位于 `/app` 下。
+                - 因此判断"某目录下到底有哪些文件"时，如果 `list_files` 结果里混有以 `/` 开头的条目，**必须再用 `execute` 执行 `ls -la <目录>` 交叉验证**，以真实 shell 输出为准，并向用户说明两者差异。
+                - `.agentscope-runtime/` 是运行时保留目录（会话 journal），工具无法访问其内容，属正常现象，不要反复尝试，也不要报为异常。
                 """.formatted(agentId, persona);
     }
 

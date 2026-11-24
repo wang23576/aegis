@@ -9,9 +9,13 @@ import io.agentscope.core.event.TextBlockDeltaEvent;
 import io.agentscope.core.event.ThinkingBlockDeltaEvent;
 import io.agentscope.core.event.ToolCallDeltaEvent;
 import io.agentscope.core.event.ToolCallStartEvent;
+import io.agentscope.core.event.ToolProgressEvent;
+import io.agentscope.core.event.ToolResultDataDeltaEvent;
 import io.agentscope.core.event.ToolResultEndEvent;
 import io.agentscope.core.event.ToolResultTextDeltaEvent;
+import io.agentscope.core.message.ContentBlock;
 import io.agentscope.core.message.Msg;
+import io.agentscope.core.message.TextBlock;
 import io.agentscope.core.message.UserMessage;
 import io.agentscope.harness.agent.HarnessAgent;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -159,11 +163,16 @@ public class SessionService {
         final long startedAt = System.currentTimeMillis();
         final StringBuilder args = new StringBuilder();
         final StringBuilder result = new StringBuilder();
+        /** Text chunks streamed via ToolProgressEvent (some tools stream output as progress). */
+        final StringBuilder progress = new StringBuilder();
         Long endedAt;
         boolean error;
 
         CallAcc(String name) { this.name = name; }
     }
+
+    private static final org.slf4j.Logger log =
+            org.slf4j.LoggerFactory.getLogger(SessionService.class);
 
     /**
      * Drives a synchronous conversation via the event stream, auto-approving tool calls that land
@@ -197,24 +206,46 @@ public class SessionService {
                 } else if (event instanceof ToolCallDeltaEvent td && pendingCalls.containsKey(td.getToolCallId())
                         && td.getDelta() != null) {
                     pendingCalls.get(td.getToolCallId()).args.append(td.getDelta());
-                } else if (event instanceof ToolResultTextDeltaEvent trd
-                        && pendingCalls.containsKey(trd.getToolCallId()) && trd.getDelta() != null) {
-                    pendingCalls.get(trd.getToolCallId()).result.append(trd.getDelta());
-                } else if (event instanceof ToolResultEndEvent te && pendingCalls.containsKey(te.getToolCallId())) {
-                    CallAcc acc = pendingCalls.get(te.getToolCallId());
-                    acc.endedAt = System.currentTimeMillis();
-                    acc.error = te.getState() != null && te.getState().name().contains("ERROR");
+                } else if (event instanceof ToolResultTextDeltaEvent trd) {
+                    appendResult(pendingCalls, trd.getToolCallId(), trd.getToolCallName(), trd.getDelta());
+                } else if (event instanceof ToolResultDataDeltaEvent trd && trd.getData() != null) {
+                    // Non-text result blocks (e.g. execute's execution details) stream as data deltas.
+                    appendResult(pendingCalls, trd.getToolCallId(), trd.getToolCallName(), blockText(trd.getData()));
+                } else if (event instanceof ToolProgressEvent tp && tp.getContent() != null) {
+                    // Some tools stream their raw output as progress chunks; keep as fallback.
+                    appendResult(pendingCalls, tp.getToolCallId(), tp.getToolCallName(), blockText(tp.getContent()), true);
+                } else if (event instanceof ToolResultEndEvent te) {
+                    CallAcc acc = findAcc(pendingCalls, te.getToolCallId(), te.getToolCallName());
+                    if (acc != null) {
+                        acc.endedAt = System.currentTimeMillis();
+                        acc.error = te.getState() != null && te.getState().name().contains("ERROR");
+                        // Last resort: no result deltas arrived but progress chunks did.
+                        if (acc.result.length() == 0 && acc.progress.length() > 0) {
+                            acc.result.append(acc.progress);
+                        }
+                        if (acc.result.length() == 0) {
+                            log.warn("Tool result captured empty after end: name={}, id={}, state={}",
+                                    te.getToolCallName(), te.getToolCallId(), te.getState());
+                        }
+                    }
                 } else if (event instanceof RequireUserConfirmEvent confirm) {
                     pendingConfirm = confirm;
                 }
             }
-            // harvest completed calls of this round, in invocation order
-            for (CallAcc acc : pendingCalls.values()) {
-                long dur = acc.endedAt == null ? System.currentTimeMillis() - acc.startedAt : acc.endedAt - acc.startedAt;
+            // harvest completed calls; keep unfinished ones pending — auto-approved
+            // writes (PERMISSION_ASKING → ConfirmResult) execute in the NEXT round,
+            // so their result events arrive after pendingCalls would otherwise be cleared.
+            for (Iterator<Map.Entry<String, CallAcc>> it = pendingCalls.entrySet().iterator(); it.hasNext();) {
+                CallAcc acc = it.next().getValue();
+                if (acc.endedAt == null) continue;
+                long dur = acc.endedAt - acc.startedAt;
                 executedTools.add(new ToolCallRecord(acc.name, acc.args.toString(), acc.result.toString(),
                         acc.startedAt, dur, acc.error));
+                if (acc.result.isEmpty()) {
+                    log.warn("Tool result captured empty: name={}, args={}", acc.name, acc.args);
+                }
+                it.remove();
             }
-            pendingCalls.clear();
 
             if (pendingConfirm == null) {
                 return finalResult;
@@ -231,6 +262,39 @@ public class SessionService {
                     .build();
         }
         throw new IllegalStateException("Too many PERMISSION_ASKING rounds (possible tool loop)");
+    }
+
+    /** Appends a streamed result chunk to the matching in-flight call, tolerating id/name mismatches. */
+    private void appendResult(Map<String, CallAcc> pending, String id, String name, String text) {
+        appendResult(pending, id, name, text, false);
+    }
+
+    private void appendResult(Map<String, CallAcc> pending, String id, String name, String text, boolean asProgress) {
+        if (text == null || text.isEmpty()) return;
+        CallAcc acc = findAcc(pending, id, name);
+        if (acc == null) return;
+        if (asProgress) acc.progress.append(text); else acc.result.append(text);
+    }
+
+    /** Matches a pending call by exact id first, then falls back to a unique open call with the same name. */
+    private static CallAcc findAcc(Map<String, CallAcc> pending, String id, String name) {
+        CallAcc acc = id != null ? pending.get(id) : null;
+        if (acc != null) return acc;
+        if (name == null) return null;
+        CallAcc found = null;
+        for (CallAcc a : pending.values()) {
+            if (a.name.equals(name) && a.endedAt == null) {
+                if (found != null) return null; // ambiguous, do not guess
+                found = a;
+            }
+        }
+        return found;
+    }
+
+    /** Best-effort text extraction from a streamed result block. */
+    private static String blockText(ContentBlock block) {
+        if (block instanceof TextBlock tb) return tb.getText();
+        return null;
     }
 
     /** Trajectory summary derived from stored messages (tool_calls holds structured JSON). */

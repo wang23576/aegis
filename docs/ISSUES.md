@@ -11,6 +11,50 @@
 
 ---
 
+### ISSUE-010  list_files 在工作区目录里"看到"不存在的 aegis.jar
+- 发现时间：2026-11-24（Alan 实测反馈）
+- 现象：`list_files {"path": "/data/workspaces/claw/1"}` 返回 `[FILE] /aegis.jar (54020157 bytes)`，但该目录实际没有此文件（`execute` 跑 `ls -la` / `find` 均证实不存在）；而同轮 `list_files {"path": "/app"}` 返回的是 `../../../app/aegis.jar`，两处大小一致（= /app/aegis.jar 实际大小）
+- 定位过程（反编译 agentscope-harness 2.1.0-SNAPSHOT + 容器实机对照实验）：
+  1. HarnessAgent 默认文件系统 = `ProjectAwareOverlay`：上层是工作区层（cwd=/data/workspaces/claw，ROOTED 模式，userId 作命名空间，条目按 cwd 相对路径渲染、剥掉 "1/" 前缀 → 工作区条目显示为裸名）；下层是"项目层" `LocalFilesystem(cwd=/app, SANDBOXED 虚拟模式)`
+  2. `OverlayFilesystem.ls` 会把上下两层结果按条目路径**字符串去重后合并**；项目层条目经 `toVirtualPath` 渲染为 `"/" + 相对路径`（如 `/aegis.jar`）
+  3. **实机对照实验**：`execute` 执行 `touch /app/zzz_probe.txt` 后立即 `list_files` 工作区，`/zzz_probe.txt` 立刻出现在列表中 → 实锤：项目层（/app）的虚拟条目被合并进了工作区目录列表
+  4. 两层渲染样式不同（`/aegis.jar` vs `aegis.jar`），字符串去重失效 → /app/aegis.jar 以 `/aegis.jar` 形式"幻影"出现在工作区列表，**工作区里并无第二份 jar**
+- 修复：属 harness 内建行为（把项目目录以虚拟路径透出给智能体），不在应用层强行绕过；改为在 AGENTS.md 脚手架增加「工具输出解读约定」：以 `/` 开头的 list_files 条目是 /app 的虚拟映射，判断目录真实内容必须用 `execute` 的 `ls -la` 交叉验证，以真实 shell 输出为准
+- 状态：已关闭（按约定缓解；如需彻底隐藏项目层可后续用 `LocalFilesystemSpec.project()` 显式配置）
+
+---
+
+### ISSUE-011  轨迹里 execute 工具"无结果"（result 恒为空）
+- 发现时间：2026-11-24（Alan 实测反馈）
+- 现象：轨迹详情里 execute 的参数完整，但 result 恒为空字符串；list_files 的结果却能完整记录
+- 根因：`ShellExecuteTool` 的结果块带 `withExecutionDetails`，框架 `ToolResultCallback` 按 ContentBlock 类型分流——TextBlock 发 `ToolResultTextDeltaEvent`，**非文本块发 `ToolResultDataDeltaEvent`**；SessionService 只监听了 TextDelta，DataDelta/ToolProgressEvent 全部漏掉
+- 修复：SessionService 补抓三类事件——`ToolResultDataDeltaEvent`（提取 TextBlock 文本）、`ToolProgressEvent`（作为兜底缓冲）、`ToolResultEndEvent`（结果仍为空且 progress 有内容时回填）；并增加按 toolCallName 的兜底匹配（toolCallId 不一致时防丢）+ 空结果 WARN 日志便于后续排查；**关键修复**：收获已完成的调用后不再清空 pendingCalls——自动批准的写类工具（PERMISSION_ASKING → ConfirmResult）在下一轮才真正执行，其结果事件到达时调用记录必须仍在，否则全被丢弃
+- 状态：已关闭
+- 复测结果：execute 执行 `echo HELLO_AEGIS && ls /app`，轨迹 result 完整记录 `Exit code: 0\n\nHELLO_AEGIS\naegis.jar`；混合轮次（execute → list_files）顺序与结果均正确，无重复记录，无空结果 WARN。
+
+---
+
+### ISSUE-012  list_files 访问 .agentscope-runtime 报 "Session journal is reserved for the runtime"
+- 发现时间：2026-11-24（Alan 实测反馈）
+- 现象：`list_files {"path": "/data/workspaces/claw/1/.agentscope-runtime"}` 返回 Error: Tool execution failed: Session journal is reserved for the runtime
+- 根因：agentscope-java 有意为之——`LocalFilesystem.resolvePath` 对路径中含 `.agentscope-runtime` 段的任何访问直接抛 SecurityException（该目录存放会话 journal / checkpoint，属运行时保留数据，禁止智能体读写）
+- 结论：**正常防护行为，非 bug，无需修复**；已在 AGENTS.md 脚手架中告知智能体该目录不可访问属正常现象，不要反复尝试
+- 状态：已关闭
+
+---
+
+### ISSUE-013  流式输出时手动滚动会被"抢"回底部
+- 发现时间：2026-11-24（Alan 实测反馈）
+- 现象：回复流式输出过程中，用户向上滚动查看历史，滚动位置会被每个 delta 自动 `scrollIntoView` 拉回底部
+- 根因：ChatView 的流式跟随 effect 无条件 `scrollIntoView`，没有判断用户是否已离开底部
+- 修复：两层修复——
+  1. **布局层（真正的根因）**：`.chat-area` 作为 flex 子项缺 `min-height: 0`，内容超高时整个 body 在滚动而非聊天气泡区；补 `flex: 1 1 0; min-height: 0`（composer 加 `flex-shrink: 0`）
+  2. **跟随层**：监听 `.chat-area` scroll 事件，距底部 <80px 视为贴底；非贴底时流式 delta 不再滚动，发送新消息或切换会话时重置为贴底；距底部 >200px 时显示悬浮「↓ 回到底部」按钮（流式内容增长时同步刷新按钮可见性）
+- 状态：已关闭
+- 复测结果：Playwright 实测——流式期间内容真实溢出（scrollHeight 898 → 1225），手动滚到顶部后 scrollTop 保持 0 不被拉回；悬浮按钮出现且点击后正确回到底部（scrollTop 626 ≈ 贴底）。
+
+---
+
 ### ISSUE-008  claw 凭记忆回答目录问题 + 回复偶发英文
 - 发现时间：2026-11-24（Alan 实测反馈）
 - 现象：问 claw"你能查到哪些目录和文件"，它先从记忆里找答案返回（且记忆含早期错误快照），经用户追问才真实调用工具；回复偶尔整段切换英文
