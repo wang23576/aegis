@@ -1,0 +1,24 @@
+# build artifacts
+backend/target/
+# generated: frontend dist copied here for the fat jar
+backend/src/main/resources/static/
+frontend/dist/
+frontend/tsconfig.tsbuildinfo
+frontend/node_modules/
+.build-cache/
+docker/m2-seed/
+
+# browser / test snapshots
+.playwright-cli/
+*.yaml
+
+# secrets - NEVER commit
+docker/model.env
+.env
+
+# data
+data/
+
+# OS
+.DS_Store
+Thumbs.db

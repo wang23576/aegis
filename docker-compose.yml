@@ -1,0 +1,21 @@
+services:
+  aegis:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+    image: aegis:local
+    container_name: aegis
+    ports:
+      - "8081:8081"
+    env_file:
+      - docker/model.env
+    environment:
+      AEGIS_PORT: "8081"
+      AEGIS_DB_PATH: /data/aegis.db
+      AEGIS_WORKSPACE_ROOT: /data/workspaces
+    volumes:
+      - aegis-data:/data
+    restart: unless-stopped
+
+volumes:
+  aegis-data:

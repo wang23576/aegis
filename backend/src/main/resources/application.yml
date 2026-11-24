@@ -1,0 +1,14 @@
+server:
+  port: ${AEGIS_PORT:8081}
+  address: 0.0.0.0
+
+spring:
+  application:
+    name: aegis
+  jackson:
+    default-property-inclusion: non_null
+
+logging:
+  level:
+    io.aegis: INFO
+    io.agentscope: WARN
