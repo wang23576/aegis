@@ -1,4 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { marked } from 'marked';
 import { api, AgentInfo, CurrentUser, SessionInfo, clearToken, getToken } from './api';
 import { useChatState, ensureLoaded, sendChat } from './chatStore';
@@ -225,16 +226,67 @@ function fmtMs(ms: number): string {
   return ms + ' 毫秒';
 }
 
+/** Markdown → one-line plain text for the ledger (mirrors DSH previewMarkdown). */
+function plainText(md: string | undefined, max = 240): string {
+  if (!md) return '';
+  return md
+    .replace(/```[\s\S]*?```/g, m => m.replace(/```[^\n]*\n?/g, ' ').replace(/```/g, ' '))
+    .replace(/^#{1,6}\s+/gm, '')
+    .replace(/\*\*|__|`|\*|_/g, '')
+    .replace(/!?\[([^\]]*)\]\([^)]*\)/g, '$1')
+    .replace(/^\s*\|?[\s:|-]+\|?\s*$/gm, '')   // table separator row |---|---|
+    .replace(/\|/g, ' ')                        // table cell separators
+    .replace(/^\s*[>]\s*/gm, '')
+    .replace(/^\s*[-+*]\s+/gm, '')
+    .replace(/\s{2,}/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, max) + (md.length > max ? '…' : '');
+}
+
+/** Readable tool argument preview: key=value pairs from JSON, compact object otherwise. */
+function argPreview(args: string | undefined, max = 180): string {
+  if (!args) return '';
+  let obj: any;
+  try { obj = JSON.parse(args); } catch { return plainText(args, max); }
+  if (!obj || typeof obj !== 'object') return String(obj).slice(0, max);
+  const parts = Object.entries(obj).map(([k, v]) => {
+    const raw = typeof v === 'string' ? v : JSON.stringify(v);
+    return k + '=' + (raw.length > 64 ? raw.slice(0, 64) + '…' : raw);
+  });
+  return plainText(parts.join(' · ').replace(/\n/g, ' ⏎ '), max);
+}
+
+/** Tool result summary: keep the exit line plus the first output lines. */
+function resultPreview(result: string | undefined, max = 160): string {
+  if (!result) return '';
+  const lines = result.split(/\r?\n/).map(s => s.trim()).filter(Boolean).slice(0, 3);
+  return plainText(lines.join(' · '), max);
+}
+
+function prettyJson(raw: string | undefined): string {
+  if (!raw) return '';
+  try { return JSON.stringify(JSON.parse(raw), null, 2); } catch { return raw; }
+}
+
+function fmtStartedAt(ms: number | undefined): string {
+  if (!ms) return '';
+  const d = new Date(ms);
+  const p = (n: number) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}.${String(d.getMilliseconds()).padStart(3, '0')}`;
+}
+
 function TrajectoryView({ sessionId }: { sessionId: string }) {
   const [data, setData] = useState<any>(null);
   const [collapsedTurns, setCollapsedTurns] = useState<Set<number>>(new Set());
   const [selected, setSelected] = useState<number | null>(null);
   const [query, setQuery] = useState('');
+  const [detailRaw, setDetailRaw] = useState(false);
   const chat = useChatState(sessionId);
   const wasBusy = useRef(false);
 
   useEffect(() => {
-    setSelected(null); setQuery(''); setCollapsedTurns(new Set());
+    setSelected(null); setQuery(''); setCollapsedTurns(new Set()); setDetailRaw(false);
     api.trajectory(sessionId).then(setData).catch(() => setData(null));
   }, [sessionId]);
   // Reload persisted trajectory when a live turn finishes (tool results become final).
@@ -254,23 +306,21 @@ function TrajectoryView({ sessionId }: { sessionId: string }) {
   for (const m of data.messages as any[]) {
     if (m.role === 'user') {
       turn++;
-      rows.push({ kind: 'user', turn, text: m.content?.replace(/\s+/g, ' ').trim() || '(空)', detail: m.content || '', createdAt: m.createdAt });
+      rows.push({ kind: 'user', turn, text: plainText(m.content) || '(空)', detail: m.content || '', createdAt: m.createdAt });
       continue;
     }
-    rows.push({ kind: 'message', turn, text: m.content?.replace(/\s+/g, ' ').trim() || '(无文本回复)', detail: m.content || '', createdAt: m.createdAt });
+    rows.push({ kind: 'message', turn, text: plainText(m.content) || '(无文本回复)', detail: m.content || '', createdAt: m.createdAt });
     let tools: ToolRec[] = [];
     try {
       const tc = typeof m.toolCalls === 'string' && m.toolCalls ? JSON.parse(m.toolCalls) : null;
       if (tc?.tools) tools = tc.tools;
     } catch { /* legacy comma format */ }
     for (const t of tools) {
-      const args = typeof t.args === 'string' ? t.args.replace(/\s+/g, ' ').trim() : '';
-      const result = typeof t.result === 'string' ? t.result.replace(/\s+/g, ' ').trim() : '';
       rows.push({
         kind: 'tool', turn,
-        text: t.name + (args ? ' ' + args : ''),
-        detail: t.name + (t.args ? '\n\n' + t.args : ''),
-        result: result || undefined,
+        text: t.name + (argPreview(t.args) ? ' ' + argPreview(t.args) : ''),
+        detail: t.name + (t.args ? '\n\n' + prettyJson(t.args) : ''),
+        result: resultPreview(t.result) || undefined,
         rec: t, createdAt: m.createdAt,
         durationMs: t.durationMs,
       });
@@ -279,35 +329,50 @@ function TrajectoryView({ sessionId }: { sessionId: string }) {
 
   // In-flight turn, read from the shared store — updated live by SSE even if
   // this view was unmounted while the turn was running.
-  const persistedUsers = (data.messages as any[]).filter(m => m.role === 'user').length;
+  const persistedMsgs = data.messages as any[];
+  const persistedUsers = persistedMsgs.filter(m => m.role === 'user').length;
+  const persistedAssistants = persistedMsgs.filter(m => m.role === 'assistant').length;
   const allUsers = chat.messages.filter(m => m.role === 'user');
-  const liveUser = allUsers.length > persistedUsers ? allUsers[allUsers.length - 1] : null;
-  if (chat.busy || liveUser) {
-    const liveTurn = turn + 1;
-    if (liveUser) {
+  const allAssistants = chat.messages.filter(m => m.role === 'assistant');
+  const pendingUser = allUsers.length > persistedUsers ? allUsers[allUsers.length - 1] : null;
+  const pendingAssistant = allAssistants.length > persistedAssistants ? allAssistants[allAssistants.length - 1] : null;
+  // Show live rows while running AND in the short gap after completion before
+  // the persisted trajectory reloads — without duplicating rows twice.
+  if (chat.busy || pendingUser || pendingAssistant) {
+    const liveTurn = pendingUser ? turn + 1 : Math.max(turn, 1);
+    if (pendingUser) {
       rows.push({ kind: 'user', turn: liveTurn,
-        text: liveUser.content?.replace(/\s+/g, ' ').trim() || '(空)',
-        detail: liveUser.content || '', createdAt: '', live: true });
+        text: plainText(pendingUser.content) || '(空)', detail: pendingUser.content || '',
+        createdAt: '', live: true });
     }
     const st = chat.stream;
     if (st) {
-      const text = st.content?.replace(/\s+/g, ' ').trim()
-        || (st.thinking ? '💭 正在思考…' : '执行中…');
-      rows.push({ kind: 'message', turn: liveTurn, text,
+      rows.push({ kind: 'message', turn: liveTurn,
+        text: plainText(st.content) || (st.thinking ? '💭 正在思考…' : '执行中…'),
         detail: (st.thinking ? '思考过程：\n' + st.thinking + '\n\n' : '') + (st.content || ''),
         createdAt: '', live: true });
+    } else if (pendingAssistant && !chat.busy) {
+      // Turn just finished: show its final text until /trajectory catches up.
+      rows.push({ kind: 'message', turn: liveTurn,
+        text: plainText(pendingAssistant.content) || '(无文本回复)',
+        detail: pendingAssistant.content || '', createdAt: '', live: true });
     }
-    for (const t of chat.tools) {
-      const args = t.args?.replace(/\s+/g, ' ').trim() || '';
-      const result = t.result?.replace(/\s+/g, ' ').trim() || '';
+    const liveTools: ToolRec[] = chat.busy
+      ? chat.tools.map(t => ({ name: t.name, args: t.args, result: t.result, startedAt: t.startedAt,
+          durationMs: t.durationMs, error: t.error, done: t.done }))
+      : (() => {
+          try {
+            const root = pendingAssistant?.toolCalls ? JSON.parse(pendingAssistant.toolCalls) : null;
+            return root?.tools || [];
+          } catch { return []; }
+        })();
+    for (const t of liveTools) {
       rows.push({
         kind: 'tool', turn: liveTurn,
-        text: t.name + (args ? ' ' + args : ''),
-        detail: t.name + (t.args ? '\n\n' + t.args : ''),
-        result: result || undefined,
-        rec: { name: t.name, args: t.args, result: t.result, startedAt: t.startedAt,
-               durationMs: t.durationMs, error: t.error, done: t.done },
-        createdAt: '', durationMs: t.durationMs, live: true,
+        text: t.name + (argPreview(t.args) ? ' ' + argPreview(t.args) : ''),
+        detail: t.name + (t.args ? '\n\n' + prettyJson(t.args) : ''),
+        result: resultPreview(t.result) || undefined,
+        rec: t, createdAt: '', durationMs: t.durationMs, live: true,
       });
     }
   }
@@ -333,8 +398,14 @@ function TrajectoryView({ sessionId }: { sessionId: string }) {
         data-kind={asSummary ? 'summary' : r.kind}
         data-selected={selected === i || undefined}
         data-error={r.rec?.error || undefined}
+        data-running={(r.live && r.rec && r.rec.done === false) || undefined}
+        title={asSummary ? '点击展开该轮次' : undefined}
         className={asSummary ? 'summary-row' : (r.live ? 'live-row' : (selected === i ? 'selected-row' : ''))}
-        onClick={() => !asSummary && setSelected(i)}>
+        onClick={() => {
+          if (asSummary) {
+            setCollapsedTurns(prev => { const next = new Set(prev); next.delete(r.turn); return next; });
+          } else { setSelected(i); setDetailRaw(false); }
+        }}>
       <td className="traj-event">
         <span className="turn-rail" />
         {r.turn > 0 && (i === 0 || rows[i - 1].turn !== r.turn) && <span className="turn-label">第 {r.turn} 轮</span>}
@@ -342,35 +413,29 @@ function TrajectoryView({ sessionId }: { sessionId: string }) {
       </td>
       <td className="traj-content">
         {asSummary
-          ? `… ${turnSummaries.get(r.turn)?.steps || 0} 个步骤 · ${turnSummaries.get(r.turn)?.tools || 0} 个工具调用`
+          ? `… ${turnSummaries.get(r.turn)?.steps || 0} 个步骤 · ${turnSummaries.get(r.turn)?.tools || 0} 个工具调用（点击展开）`
           : r.kind === 'tool'
             ? <span className="tool-line">
-                <span className="tool-call">{r.text.slice(0, 160)}</span>
-                {r.result && <span className={'tool-result' + (r.rec?.error ? ' is-error' : '')}>→ {r.result.slice(0, 120)}</span>}
-                {r.live && r.rec && !r.rec.done && <span className="tool-running">运行中…</span>}
+                <span className="tool-call">{r.text.slice(0, 200)}</span>
+                {r.result && <span className={'tool-result' + (r.rec?.error ? ' is-error' : '')}>→ {r.result.slice(0, 160)}</span>}
+                {r.rec?.error && <span className="tool-state is-error">失败</span>}
+                {r.live && r.rec && r.rec.done === false && <span className="tool-running">运行中…</span>}
               </span>
-            : <span className="content-text">{r.text.slice(0, 200)}</span>}
+            : <span className="content-text">{r.text.slice(0, 240)}</span>}
       </td>
     </tr>
   );
 
+  // Search filters rows (DSH parity); collapsed turns show a clickable summary.
   const rendered: React.ReactNode[] = [];
   let lastTurn = -1;
   rows.forEach((r, i) => {
+    if (!matches(r)) return;
     const turnStart = r.turn !== lastTurn;
     lastTurn = r.turn;
-    if (turnStart && collapsedTurns.has(r.turn)) {
-      rendered.push(renderRow(r, i, true));
-      return;
-    }
-    if (!matches(r)) {
-      rendered.push(
-        <tr key={i} data-kind={r.kind} className="dimmed-row">
-          <td className="traj-event"><span className="turn-rail" /></td>
-          <td className="traj-content"><span className="content-text">{r.text.slice(0, 160)}</span></td>
-        </tr>
-      );
-      return;
+    if (collapsedTurns.has(r.turn)) {
+      if (turnStart) rendered.push(renderRow(r, i, true));
+      return; // hide every remaining row of a collapsed turn
     }
     rendered.push(renderRow(r, i));
   });
@@ -401,7 +466,14 @@ function TrajectoryView({ sessionId }: { sessionId: string }) {
           <aside className="traj-details">
             <div className="details-head">
               <span className={`kind-chip chip-${sel.kind}`}>{kindLabel[sel.kind]}</span>
-              <span className="details-time">{sel.createdAt || (sel.live ? '实时' : '')}</span>
+              <span className="details-time" title={sel.rec?.startedAt ? String(sel.rec.startedAt) : undefined}>
+                {sel.rec?.startedAt ? fmtStartedAt(sel.rec.startedAt) : (sel.createdAt || (sel.live ? '实时' : ''))}
+              </span>
+              {sel.kind === 'message' && (
+                <button className="details-view" onClick={() => setDetailRaw(!detailRaw)}>
+                  {detailRaw ? '渲染' : '原文'}
+                </button>
+              )}
               <button className="details-close" onClick={() => setSelected(null)}>✕</button>
             </div>
             <div className="details-body">
@@ -410,12 +482,13 @@ function TrajectoryView({ sessionId }: { sessionId: string }) {
                   <div className="details-tab">概述</div>
                   <dl className="kv">
                     <dt>工具</dt><dd className="mono">{sel.rec.name}</dd>
+                    <dt>开始时间</dt><dd className="mono">{fmtStartedAt(sel.rec.startedAt) || '—'}</dd>
                     <dt>耗时</dt><dd>{fmtMs(sel.rec.durationMs ?? (sel.live && sel.rec.done === false ? Date.now() - sel.rec.startedAt : 0))}</dd>
                     <dt>状态</dt><dd className={sel.rec.error ? 'err' : (sel.rec.done === false ? 'running' : 'ok')}>
                       {sel.rec.error ? '失败' : (sel.rec.done === false ? '运行中' : '完成')}</dd>
                   </dl>
-                  <div className="details-tab">参数</div>
-                  <pre className="payload">{sel.rec.args || '(无参数)'}</pre>
+                  <div className="details-tab">参数（JSON）</div>
+                  <pre className="payload">{prettyJson(sel.rec.args) || '(无参数)'}</pre>
                   <div className="details-tab">结果</div>
                   <pre className={'payload' + (sel.rec.error ? ' error-payload' : '')}>{sel.rec.result || '(无输出)'}</pre>
                 </>
@@ -423,7 +496,11 @@ function TrajectoryView({ sessionId }: { sessionId: string }) {
                 <>
                   <div className="details-tab">{sel.kind === 'user' ? '用户消息' : '助手回复'}</div>
                   {sel.durationMs != null && <div className="details-duration">耗时 {fmtMs(sel.durationMs)}</div>}
-                  <pre className="payload">{sel.detail || '(空)'}</pre>
+                  {sel.kind === 'message' && !detailRaw ? (
+                    <div className="md" dangerouslySetInnerHTML={{ __html: renderMarkdown(sel.detail || '') }} />
+                  ) : (
+                    <pre className="payload">{sel.detail || '(空)'}</pre>
+                  )}
                 </>
               )}
             </div>
@@ -525,6 +602,29 @@ function AdminPanel({ user, onClose }: { user: CurrentUser; onClose: () => void 
   );
 }
 
+/** Clipboard with legacy fallback (DSH parity); returns whether write succeeded. */
+async function writeClipboard(text: string): Promise<boolean> {
+  const active = document.activeElement as HTMLElement | null;
+  let ok = false;
+  try {
+    if (navigator.clipboard?.writeText) { await navigator.clipboard.writeText(text); ok = true; }
+  } catch { /* fall through */ }
+  if (!ok) {
+    try {
+      const ta = document.createElement('textarea');
+      ta.value = text; ta.readOnly = true;
+      ta.style.cssText = 'position:fixed;left:-9999px;top:0';
+      document.body.appendChild(ta); ta.select();
+      ok = document.execCommand('copy');
+      ta.remove();
+    } catch { ok = false; }
+  }
+  active?.focus?.({ preventScroll: true });
+  return ok;
+}
+
+interface SessionMenu { id: string; x: number; y: number }
+
 function Workspace({ user, onLogout }: { user: CurrentUser; onLogout: () => void }) {
   const [agents, setAgents] = useState<AgentInfo[]>([]);
   const [sessions, setSessions] = useState<SessionInfo[]>([]);
@@ -532,12 +632,40 @@ function Workspace({ user, onLogout }: { user: CurrentUser; onLogout: () => void
   const [view, setView] = useState<'chat' | 'trajectory'>('chat');
   const [showChooser, setShowChooser] = useState(false);
   const [admin, setAdmin] = useState(false);
+  const [menu, setMenu] = useState<SessionMenu | null>(null);
+  const [toast, setToast] = useState<{ text: string; ok: boolean } | null>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
 
   const loadSessions = () => api.listSessions().then(setSessions).catch(() => {});
   useEffect(() => {
     api.listAgents().then(setAgents).catch(() => {});
     loadSessions();
   }, []);
+
+  // Dismiss the session menu on outside pointerdown or Escape; restore trigger focus.
+  useEffect(() => {
+    if (!menu) return;
+    const onDown = (e: PointerEvent) => {
+      const target = e.target as HTMLElement;
+      if (menuRef.current?.contains(target) || target.closest('[data-session-menu-trigger]')) return;
+      setMenu(null);
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        setMenu(null);
+        document.querySelector<HTMLElement>(`[data-session-menu-trigger="${menu.id}"]`)?.focus();
+      }
+    };
+    document.addEventListener('pointerdown', onDown);
+    document.addEventListener('keydown', onKey);
+    return () => { document.removeEventListener('pointerdown', onDown); document.removeEventListener('keydown', onKey); };
+  }, [menu]);
+
+  async function copySessionId(id: string) {
+    const ok = await writeClipboard(id);
+    setMenu(null);
+    setToast({ text: ok ? 'Session ID 已复制' : '复制失败，请重试', ok });
+  }
 
   async function pickAgent(a: AgentInfo) {
     try {
@@ -567,6 +695,25 @@ function Workspace({ user, onLogout }: { user: CurrentUser; onLogout: () => void
             {sessions.map(s => (
               <div key={s.id} data-session-id={s.id} className={`sess-item ${current?.id === s.id ? 'active' : ''}`} onClick={() => openSession(s)}>
                 <span>{s.title || s.id.slice(0, 8)}</span>
+                <button
+                  className="sess-more" title="更多操作" aria-label="会话更多操作"
+                  aria-haspopup="menu" aria-expanded={menu?.id === s.id}
+                  data-session-menu-trigger={s.id}
+                  onClick={e => {
+                    e.stopPropagation();
+                    if (menu?.id === s.id) { setMenu(null); return; }
+                    const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
+                    (e.currentTarget as HTMLElement).focus({ preventScroll: true });
+                    setMenu({ id: s.id, x: Math.min(r.left, window.innerWidth - 190), y: r.bottom + 4 });
+                  }}
+                  onKeyDown={e => {
+                    if (e.key === 'ArrowDown' || e.key === 'Enter' || e.key === ' ') {
+                      e.preventDefault();
+                      const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
+                      setMenu({ id: s.id, x: Math.min(r.left, window.innerWidth - 190), y: r.bottom + 4 });
+                    }
+                  }}
+                >···</button>
               </div>
             ))}
             {sessions.length === 0 && <div style={{ color: '#bbb', fontSize: 12, padding: 8 }}>暂无历史会话</div>}
@@ -606,6 +753,16 @@ function Workspace({ user, onLogout }: { user: CurrentUser; onLogout: () => void
           </>
         )}
       </div>
+      {menu && createPortal(
+        <div className="session-menu" role="menu" ref={menuRef}
+             style={{ left: menu.x, top: menu.y }}>
+          <button role="menuitem" autoFocus onClick={() => copySessionId(menu.id)}>
+            复制 Session ID
+          </button>
+        </div>, document.body)}
+      {toast && createPortal(
+        <div className={'toast' + (toast.ok ? '' : ' warn')} role="alert"
+             onAnimationEnd={() => setToast(null)}>{toast.text}</div>, document.body)}
     </div>
   );
 }

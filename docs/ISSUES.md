@@ -197,3 +197,31 @@
   - `AgentRegistry` 默认开启 thinking（`AEGIS_MODEL_THINKING=false` 可回退关闭），标题生成仍单独禁用以保持_auxiliary 调用短平快
   - 前端 store 累积 thinking 增量并在流式气泡中以「💭 思考过程」折叠块展示；轨迹详情里也保留思考文本
 - 复测：容器日志 `Model thinking enabled`；SSE 实测 `thinking` 帧 82 个；Playwright 实测思考块在切页返回后仍可见（thinking_len>0）
+
+---
+
+### ISSUE-017  轨迹行可读性差：Markdown 源码裸露、参数/结果硬截断、状态与时间缺失
+- 发现时间：2026-11-25（Alan 反馈"轨迹有问题，可分析"，结合 DSH 源码对照）
+- 问题清单与修复：
+  1. 助手行直接显示原始 Markdown（`**`、`|---|`、标题标记）→ 行内改为 Markdown 纯文本摘要（去代码块/强调/表格/链接），详情面板提供"渲染/原文"切换（DSH `extractMarkdownPlainText` 思路）
+  2. 工具参数截成 160 字符原始 JSON、结果截 120 字符 → 参数改 `key=value` 可读摘要（完整 JSON 在详情面板 pretty 展示），结果合并前 3 行非空内容摘要（保留 `Exit code` + 实际输出），避免只看到退出码
+  3. 失败工具只有红色、无状态文案 → 行内增加"失败"标签，运行中保留脉冲"运行中…"，`data-running` 标记便于样式扩展
+  4. 详情时间为助手消息入库时间 → 工具行改用自身 `startedAt`，显示毫秒级 `YYYY-MM-DD HH:MM:SS.mmm`（title 属性保留 Unix ms）
+  5. 搜索只把不匹配行变暗 → 改为直接过滤（DSH 行为）
+  6. 折叠轮次的摘要行不可点 → 点击摘要行展开该轮；同时修复折叠时同轮次其余行仍渲染的 bug（折叠后 14→2 行，展开恢复）
+  7. 轮次结束后实时行与落库数据可能短暂重复 → 实时行仅在 `chat.busy || pendingUser || pendingAssistant` 时渲染，完成后立即切回落库行
+- 对照来源：`packages/client/ui-trajectory/src/client/trajectory-preview.ts:13-20`、`layout.ts:1060-1086`、`TrajectoryTable.tsx:1030-1046,1147-1166`
+- 复测：Playwright 实测助手行 `has_raw_markdown=false`、工具行 `execute command=pwd → Exit code: 0 · /app`、失败标签 4 个、详情时间 `2026-11-25 10:22:58.286`、渲染/原文切换生效、搜索无匹配行数 0、折叠/展开行数正确
+
+---
+
+### ISSUE-018  会话列表无法拿到 Session ID（报问题时无法精确指认会话）
+- 发现时间：2026-11-25（Alan 需求）
+- 需求：左侧历史会话右侧加 "..." 操作，浮层内提供"复制 Session ID"，便于反馈具体会话
+- 参考 DSH：`packages/client/ui-workspace/src/client/session-actions/context-menus.tsx:72-75`（Copy Session ID 恒定可用）、`client/index.ts:296-301`（writeClipboard + toast）、`ui-primitives/src/clipboard.ts:29-61`（clipboard API + execCommand 降级）、`ui-context-menu/src/client/Button.tsx:30-53`（点击 ellipsis、锚点取按钮左下角、aria-haspopup）
+- 修复：
+  - 会话行右侧 "..." 按钮（hover/focus 显示，aria-haspopup=menu、aria-expanded、data-session-menu-trigger）
+  - 点击弹出固定定位浮层（`role=menu` / `role=menuitem`），含"复制 Session ID"；复制完整 `session.id`
+  - 剪贴板 `navigator.clipboard.writeText` 优先，`execCommand('copy')` 降级，复制后恢复原焦点；成功/失败 toast（`role=alert`）反馈
+  - 外部 pointerdown 与 Escape 关闭（Escape 时焦点回到触发按钮），菜单项 autoFocus；会话行本身仍可点击打开
+- 复测：Playwright 实测菜单文案"复制 Session ID"、复制值与 `data-session-id` 完全一致（clip_match=true）、toast"Session ID 已复制"；Escape 关闭正常
