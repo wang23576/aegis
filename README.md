@@ -25,8 +25,10 @@
 ### 方式一：Docker Compose（推荐）
 
 ```bash
-# 1. 准备模型配置（参考 docker/model.env.example，填入自己的 base-url/model/api-key）
+# 1. 准备模型与联网搜索配置（参考 docker/model.env.example 填写；该文件含密钥，已被 git 忽略）
 cp docker/model.env.example docker/model.env
+# web_search 与 paw 一致：优先 AnySearch（ANYSEARCH_API_KEY + ANYSEARCH_BASE_URL），
+# 未配置 AnySearch 时回退 Tavily（TAVILY_API_KEY）。密钥从 paw 的 .env 复制即可。
 
 # 2. 构建并启动
 docker compose up -d --build

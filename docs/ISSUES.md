@@ -289,3 +289,11 @@
   - 标题生成改为与对话并行的异步任务；请求线程捕获 `AuthContext` 用户 ID 传入异步 lambda；done 立即发出，若 LLM 标题未完成则用首条消息截断了标题即时回传，LLM 标题随后落库（下次列表刷新可见）
   - 步骤/详情 token 从 `↑21008 ↓655 💭0` 和 8 行明细精简为单个总数（上 k，如 `9.8k` / `11k`），明细仍在原始事件与导出 zip
 - 复测：SSE 实测 `step_end` 3.83s → `done` 4.78s（原 2.64s → 8.53s，标题阻塞 5.9s 已消除）；Playwright 实测对话无权限提示、token 为 `9.8k/11k`、完成后按钮回到"发送"；轨迹主表无内部权限事件，展开开关可见
+
+---
+
+### CONFIG-003  web_search 联网搜索与 paw 对齐
+- 时间：2026-11-25（Alan 要求按 paw 的 web_search 配置同样配置 Aegis）
+- 机制：`agentscope-harness` 的 `WebTools$WebSearchTool` 直接读环境变量：`ANYSEARCH_API_KEY` / `ANYSEARCH_BASE_URL`（默认 `https://api.anysearch.com/v1/search`）优先，未设置则回退 `TAVILY_API_KEY`；两者都没有时返回 "Neither ANYSEARCH_API_KEY nor TAVILY_API_KEY is set"
+- 配置：Aegis 已在 `docker/model.env`（env_file，gitignored）写入与 paw `.env` 相同的 AnySearch key/base-url；`docker/model.env.example` 增加对应模板；README 快速开始补充说明。智能体 `tools.json` 原本已包含 web_search 白名单，无需改动
+- 复测：API 实测触发 `tool_start(web_search)`，轨迹工具结果返回 AnySearch 真实搜索数据（AgentScope Java 2.0 等），助手回复正确引用第一条标题；容器日志无错误
