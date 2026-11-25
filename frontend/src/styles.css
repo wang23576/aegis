@@ -255,3 +255,39 @@ th { color: #888; font-weight: 500; background: #fafbfc; }
 .toast { position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%); background: #1f2430; color: #fff; padding: 10px 18px; border-radius: 8px; font-size: 13px; z-index: 300; animation: toast-in .18s ease-out; }
 .toast.warn { background: #b45309; }
 @keyframes toast-in { from { opacity: 0; transform: translate(-50%, 8px); } to { opacity: 1; transform: translate(-50%, 0); } }
+
+/* Harness tab overflow ("…" popup, DSH-style) */
+.tab-overflow { position: relative; display: inline-flex; align-items: center; }
+.tab-overflow > button { margin-left: 8px; background: none; border: 1px solid transparent; color: #888;
+  font-size: 14px; padding: 2px 8px; border-radius: 6px; line-height: 1.2; letter-spacing: 1px; }
+.tab-overflow > button:hover, .tab-overflow > button.active { color: #4f46e5; background: #eef2ff; }
+.tab-overflow-menu { min-width: 140px; }
+
+/* Workspace (Harness management, read-only browser — paw parity) */
+.ws { flex: 1; display: flex; min-height: 0; background: #fff; }
+.ws-tree { width: 280px; flex-shrink: 0; border-right: 1px solid #eceff3; display: flex; flex-direction: column; min-height: 0; }
+.ws-toolbar { display: flex; align-items: center; gap: 6px; padding: 8px 10px; border-bottom: 1px solid #eef0f4; flex-shrink: 0; }
+.ws-title { flex: 1; font-size: 12px; font-weight: 650; color: #888; text-transform: uppercase; letter-spacing: .06em; }
+.ws-btn { background: #f6f7fa; border: 1px solid #e0e3ec; color: #555; border-radius: 5px;
+  padding: 2px 8px; font-size: 12px; line-height: 1.5; }
+.ws-btn:hover { background: #eef2ff; color: #4f46e5; border-color: #c7d2fe; }
+.ws-btn.active { background: #eef2ff; color: #4f46e5; border-color: #c7d2fe; }
+.ws-tree-scroll { flex: 1; overflow: auto; padding: 6px 4px; min-height: 0; }
+.ws-node { display: flex; align-items: center; gap: 6px; padding: 4px 8px; border-radius: 5px;
+  font-size: 13px; color: #333; cursor: pointer; white-space: nowrap; overflow: hidden; user-select: none; }
+.ws-node:hover { background: #f3f4f8; }
+.ws-node.active { background: #eef2ff; color: #3730a3; }
+.ws-node-icon { flex-shrink: 0; font-size: 12px; }
+.ws-node-name { overflow: hidden; text-overflow: ellipsis; }
+.ws-node-size { margin-left: auto; flex-shrink: 0; font-size: 10px; color: #9aa1b1; font-variant-numeric: tabular-nums; }
+.ws-view { flex: 1; display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+.ws-view-bar { display: flex; align-items: center; gap: 10px; padding: 8px 14px;
+  border-bottom: 1px solid #eef0f4; flex-shrink: 0; }
+.ws-path { flex: 1; font-family: Menlo, Consolas, monospace; font-size: 12px; color: #3730a3;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ws-badge { background: #f1f3f6; color: #6b7280; border-radius: 4px; padding: 2px 8px; font-size: 10px;
+  font-weight: 650; text-transform: uppercase; letter-spacing: .05em; flex-shrink: 0; }
+.ws-viewer { flex: 1; border: none; outline: none; resize: none; padding: 14px 16px;
+  background: #fcfcfd; color: #1f2430; font: 12.5px/1.6 Menlo, Consolas, 'Courier New', monospace;
+  overflow: auto; min-height: 0; }
+.ws-empty { padding: 40px 20px; color: #9aa1b1; font-size: 13px; text-align: center; }

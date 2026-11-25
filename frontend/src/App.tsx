@@ -3,6 +3,7 @@ import { createPortal } from 'react-dom';
 import { marked } from 'marked';
 import { api, AgentInfo, CurrentUser, SessionInfo, StepView, clearToken, getToken } from './api';
 import { useChatState, ensureLoaded, sendChat, LiveStep, LiveTool } from './chatStore';
+import WorkspaceView from './WorkspaceView';
 
 marked.setOptions({ gfm: true, breaks: true });
 
@@ -830,16 +831,26 @@ async function writeClipboard(text: string): Promise<boolean> {
 
 interface SessionMenu { id: string; x: number; y: number }
 
+/** Harness management tabs for agents the user can manage (paw order). */
+const HARNESS_TABS = ['Workspace', 'Skill', 'Subagent', 'Tool', 'Sessions', 'Channel', 'Setting'] as const;
+type HarnessTab = typeof HARNESS_TABS[number];
+
 function Workspace({ user, onLogout }: { user: CurrentUser; onLogout: () => void }) {
   const [agents, setAgents] = useState<AgentInfo[]>([]);
   const [sessions, setSessions] = useState<SessionInfo[]>([]);
   const [current, setCurrent] = useState<SessionInfo | null>(null);
-  const [view, setView] = useState<'chat' | 'trajectory'>('chat');
+  const [view, setView] = useState<'chat' | 'trajectory' | 'harness'>('chat');
+  const [harnessTab, setHarnessTab] = useState<HarnessTab>('Workspace');
   const [showChooser, setShowChooser] = useState(false);
   const [admin, setAdmin] = useState(false);
   const [menu, setMenu] = useState<SessionMenu | null>(null);
+  const [overflowOpen, setOverflowOpen] = useState(false);
+  const [overflowCount, setOverflowCount] = useState(0);
+  const [canManageAgent, setCanManageAgent] = useState(false);
   const [toast, setToast] = useState<{ text: string; ok: boolean } | null>(null);
   const menuRef = useRef<HTMLDivElement>(null);
+  const overflowRef = useRef<HTMLDivElement>(null);
+  const tabsRef = useRef<HTMLDivElement>(null);
 
   const loadSessions = () => api.listSessions().then(setSessions).catch(() => {});
   useEffect(() => {
@@ -871,6 +882,68 @@ function Workspace({ user, onLogout }: { user: CurrentUser; onLogout: () => void
     setMenu(null);
     setToast({ text: ok ? 'Session ID 已复制' : '复制失败，请重试', ok });
   }
+
+  // Harness tabs only appear for agents the current user can manage
+  // (super admin or agent owner) — matches AgentController.canManage.
+  useEffect(() => {
+    if (!current) { setCanManageAgent(false); return; }
+    setCanManageAgent(false);
+    api.listAgents('manageable').then(list => {
+      setCanManageAgent(list.some(a => a.id === current.agentId));
+    }).catch(() => {});
+  }, [current?.agentId, user.role]);
+
+  // Dismiss the overflow menu on outside pointerdown or Escape.
+  useEffect(() => {
+    if (!overflowOpen) return;
+    const onDown = (e: PointerEvent) => {
+      if (overflowRef.current?.contains(e.target as Node)) return;
+      setOverflowOpen(false);
+    };
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setOverflowOpen(false); };
+    document.addEventListener('pointerdown', onDown);
+    document.addEventListener('keydown', onKey);
+    return () => { document.removeEventListener('pointerdown', onDown); document.removeEventListener('keydown', onKey); };
+  }, [overflowOpen]);
+
+  // DSH-style overflow: measure how many tabs fit in the available width;
+  // the rest collapse into the "…" popup. Re-measure on resize and when
+  // session/title changes shift the layout.
+  useEffect(() => {
+    if (!current || !canManageAgent) { setOverflowCount(0); return; }
+    const measure = () => {
+      const el = tabsRef.current;
+      if (!el) return;
+      const available = el.clientWidth;
+      const OVERFLOW_BTN = 40;   // "…" button reserve
+      const GAP = 8;
+      const widths = HARNESS_TABS.map(t => t.length * 8 + 28); // approx px per tab
+      let used = 0;
+      let fit = 0;
+      for (let i = 0; i < HARNESS_TABS.length; i++) {
+        const need = widths[i] + (i > 0 ? GAP : 0) + (i < HARNESS_TABS.length - 1 ? OVERFLOW_BTN : 0);
+        if (used + need > available) break;
+        used += widths[i] + (i > 0 ? GAP : 0);
+        fit = i + 1;
+      }
+      setOverflowCount(Math.max(0, HARNESS_TABS.length - fit));
+    };
+    measure();
+    const ro = new ResizeObserver(measure);
+    if (tabsRef.current) ro.observe(tabsRef.current);
+    window.addEventListener('resize', measure);
+    return () => { ro.disconnect(); window.removeEventListener('resize', measure); };
+  }, [current, canManageAgent]);
+
+  // Position the overflow popup next to the "…" button when it opens.
+  useEffect(() => {
+    if (!overflowOpen) return;
+    const btn = overflowRef.current?.querySelector('button');
+    if (!btn) return;
+    const r = btn.getBoundingClientRect();
+    const el = overflowRef.current?.querySelector<HTMLElement>('.tab-overflow-menu');
+    if (el) { el.style.left = `${r.left}px`; el.style.top = `${r.bottom + 4}px`; }
+  }, [overflowOpen, overflowCount]);
 
   async function pickAgent(a: AgentInfo) {
     try {
@@ -940,9 +1013,40 @@ function Workspace({ user, onLogout }: { user: CurrentUser; onLogout: () => void
             <div className="topbar">
               <div className="title">{current?.title || (showChooser ? '新会话' : 'Aegis')}</div>
               {current && (
-                <div className="tabs">
-                  <button className={view === 'chat' ? 'active' : ''} onClick={() => setView('chat')}>对话</button>
-                  <button className={view === 'trajectory' ? 'active' : ''} onClick={() => setView('trajectory')}>轨迹</button>
+                <div className="tabs" ref={tabsRef}>
+                  <button className={view === 'chat' ? 'active' : ''} onClick={() => { setView('chat'); }}>对话</button>
+                  <button className={view === 'trajectory' ? 'active' : ''} onClick={() => { setView('trajectory'); }}>轨迹</button>
+                  {canManageAgent && (() => {
+                    const visible = HARNESS_TABS.slice(0, HARNESS_TABS.length - overflowCount);
+                    const hidden = HARNESS_TABS.slice(HARNESS_TABS.length - overflowCount);
+                    const isActive = (t: HarnessTab) => view === 'harness' && harnessTab === t;
+                    const pick = (t: HarnessTab) => { setView('harness'); setHarnessTab(t); setOverflowOpen(false); };
+                    return (
+                      <>
+                        {visible.map(t => (
+                          <button key={t} className={isActive(t) ? 'active' : ''} onClick={() => pick(t)}>{t}</button>
+                        ))}
+                        {overflowCount > 0 && (
+                          <div className="tab-overflow" ref={overflowRef}>
+                            <button
+                              className={view === 'harness' && hidden.includes(harnessTab) ? 'active' : ''}
+                              aria-haspopup="menu" aria-expanded={overflowOpen}
+                              title="更多页签"
+                              onClick={e => { e.stopPropagation(); setOverflowOpen(o => !o); }}
+                            >···</button>
+                            {overflowOpen && createPortal(
+                              <div className="session-menu tab-overflow-menu" role="menu">
+                                {hidden.map(t => (
+                                  <button key={t} role="menuitem"
+                                          className={isActive(t) ? 'active' : ''}
+                                          onClick={() => pick(t)}>{t}</button>
+                                ))}
+                              </div>, document.body)}
+                          </div>
+                        )}
+                      </>
+                    );
+                  })()}
                   <button
                     title="下载会话日志（zip：对话 JSONL + 轨迹 + 元数据）"
                     onClick={() => api.downloadSessionLog(current.id)}
@@ -953,7 +1057,11 @@ function Workspace({ user, onLogout }: { user: CurrentUser; onLogout: () => void
             {showChooser || !current ? <AgentChooser agents={agents} onPick={pickAgent} /> : (
               view === 'chat'
                 ? <ChatView session={current} agents={agents} onPermissionChange={m => setCurrent({ ...current, permissionMode: m })} onTitle={t => refreshTitle(current.id, t)} />
-                : <TrajectoryView sessionId={current.id} />
+                : view === 'trajectory'
+                  ? <TrajectoryView sessionId={current.id} />
+                  : harnessTab === 'Workspace'
+                    ? <WorkspaceView agentId={current.agentId} />
+                    : <div className="ws-empty" style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>{harnessTab} 页签建设中…</div>
             )}
           </>
         )}

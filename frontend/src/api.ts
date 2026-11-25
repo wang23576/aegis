@@ -28,6 +28,34 @@ export interface SessionInfo {
   updatedAt: string;
 }
 
+export interface WorkspaceSummary {
+  agentId: string;
+  workspacePath: string;
+  exists: boolean;
+  agentsMdExists: boolean;
+  memoryMdExists: boolean;
+  skillCount: number;
+  subagentCount: number;
+  dailyMemoryCount: number;
+}
+
+export interface FileNode {
+  name: string;
+  path: string;
+  type: 'dir' | 'file';
+  size?: number;
+  children?: FileNode[];
+}
+
+export interface FileContent {
+  path: string;
+  size: number;
+  content: string;
+  truncated?: boolean;
+  binary?: boolean;
+  message?: string;
+}
+
 export interface StepView {
   stepNo: number;
   replyId: string;
@@ -102,6 +130,17 @@ export const api = {
   },
   deleteAgent(id: string): Promise<any> {
     return request(`/api/agents/${id}`, { method: 'DELETE' });
+  },
+
+  // ---- Workspace (read-only Harness management, paw parity) ----
+  workspaceSummary(agentId: string): Promise<WorkspaceSummary> {
+    return request(`/api/agents/${agentId}/workspace/summary`);
+  },
+  workspaceTree(agentId: string): Promise<FileNode[]> {
+    return request(`/api/agents/${agentId}/workspace/files?depth=6`);
+  },
+  workspaceFile(agentId: string, path: string): Promise<FileContent> {
+    return request(`/api/agents/${agentId}/workspace/file?path=${encodeURIComponent(path)}`);
   },
   toolCatalog(): Promise<any[]> {
     return request('/api/agents/tools/catalog');
