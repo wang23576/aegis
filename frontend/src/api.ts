@@ -106,8 +106,16 @@ export const api = {
   async chatStream(
     id: string,
     message: string,
-    handlers: { onDelta: (t: string) => void; onThinking?: (t: string) => void;     onTool?: (name: string) => void },
-  ): Promise<{ reply: string; toolCalls: string[]; title?: string }> {
+    handlers: {
+      onDelta: (t: string) => void;
+      onThinking?: (t: string) => void;
+      onTool?: (name: string) => void;
+      onToolStart?: (id: string, name: string) => void;
+      onToolArgs?: (id: string, delta: string) => void;
+      onToolResult?: (id: string, delta: string) => void;
+      onToolEnd?: (id: string, durationMs: number, error: boolean) => void;
+    },
+  ): Promise<{ reply: string; toolCalls: string[]; toolCallsJson?: string; title?: string }> {
     const token = getToken();
     const res = await fetch(`/api/sessions/${id}/chat/stream`, {
       method: 'POST',
@@ -122,7 +130,7 @@ export const api = {
     const reader = res.body.getReader();
     const decoder = new TextDecoder('utf-8');
     let buffer = '';
-    let final = { reply: '', toolCalls: [] as string[], title: '' };
+    let final = { reply: '', toolCalls: [] as string[], toolCallsJson: '', title: '' };
     for (;;) {
       const { done, value } = await reader.read();
       if (done) break;
@@ -143,7 +151,14 @@ export const api = {
         if (event === 'delta') handlers.onDelta(payload.text);
         else if (event === 'thinking') handlers.onThinking?.(payload.text);
         else if (event === 'tool') handlers.onTool?.(payload.name);
-        else if (event === 'done') final = { reply: payload.reply ?? '', toolCalls: payload.toolCalls ?? [], title: payload.title ?? '' };
+        else if (event === 'tool_start') handlers.onToolStart?.(payload.id, payload.name);
+        else if (event === 'tool_args') handlers.onToolArgs?.(payload.id, payload.delta);
+        else if (event === 'tool_result') handlers.onToolResult?.(payload.id, payload.delta);
+        else if (event === 'tool_end') handlers.onToolEnd?.(payload.id, payload.durationMs, payload.error);
+        else if (event === 'done') final = {
+          reply: payload.reply ?? '', toolCalls: payload.toolCalls ?? [],
+          toolCallsJson: payload.toolCallsJson ?? '', title: payload.title ?? '',
+        };
         else if (event === 'error') throw new Error(payload.message);
       }
     }

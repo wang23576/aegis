@@ -43,6 +43,11 @@ public class SessionService {
         default void onDelta(String text) {}
         default void onThinkingDelta(String text) {}
         default void onTool(String toolName) {}
+        /** Fine-grained tool lifecycle for the live trajectory view. */
+        default void onToolStart(String id, String name) {}
+        default void onToolArgs(String id, String name, String delta) {}
+        default void onToolResult(String id, String name, String delta) {}
+        default void onToolEnd(String id, String name, long durationMs, boolean error) {}
     }
 
     private final JdbcTemplate jdbc;
@@ -201,19 +206,22 @@ public class SessionService {
                 } else if (event instanceof ThinkingBlockDeltaEvent thinking && thinking.getDelta() != null) {
                     listener.onThinkingDelta(thinking.getDelta());
                 } else if (event instanceof ToolCallStartEvent tc && tc.getToolCallName() != null) {
+                    String id = tc.getToolCallId() == null ? tc.getToolCallName() : tc.getToolCallId();
                     pendingCalls.put(tc.getToolCallId(), new CallAcc(tc.getToolCallName()));
                     listener.onTool(tc.getToolCallName());
+                    listener.onToolStart(id, tc.getToolCallName());
                 } else if (event instanceof ToolCallDeltaEvent td && pendingCalls.containsKey(td.getToolCallId())
                         && td.getDelta() != null) {
                     pendingCalls.get(td.getToolCallId()).args.append(td.getDelta());
+                    listener.onToolArgs(td.getToolCallId(), pendingCalls.get(td.getToolCallId()).name, td.getDelta());
                 } else if (event instanceof ToolResultTextDeltaEvent trd) {
-                    appendResult(pendingCalls, trd.getToolCallId(), trd.getToolCallName(), trd.getDelta());
+                    appendResult(pendingCalls, trd.getToolCallId(), trd.getToolCallName(), trd.getDelta(), listener);
                 } else if (event instanceof ToolResultDataDeltaEvent trd && trd.getData() != null) {
                     // Non-text result blocks (e.g. execute's execution details) stream as data deltas.
-                    appendResult(pendingCalls, trd.getToolCallId(), trd.getToolCallName(), blockText(trd.getData()));
+                    appendResult(pendingCalls, trd.getToolCallId(), trd.getToolCallName(), blockText(trd.getData()), listener);
                 } else if (event instanceof ToolProgressEvent tp && tp.getContent() != null) {
                     // Some tools stream their raw output as progress chunks; keep as fallback.
-                    appendResult(pendingCalls, tp.getToolCallId(), tp.getToolCallName(), blockText(tp.getContent()), true);
+                    appendResult(pendingCalls, tp.getToolCallId(), tp.getToolCallName(), blockText(tp.getContent()), true, listener);
                 } else if (event instanceof ToolResultEndEvent te) {
                     CallAcc acc = findAcc(pendingCalls, te.getToolCallId(), te.getToolCallName());
                     if (acc != null) {
@@ -227,6 +235,8 @@ public class SessionService {
                             log.warn("Tool result captured empty after end: name={}, id={}, state={}",
                                     te.getToolCallName(), te.getToolCallId(), te.getState());
                         }
+                        listener.onToolEnd(te.getToolCallId() == null ? acc.name : te.getToolCallId(),
+                                acc.name, acc.endedAt - acc.startedAt, acc.error);
                     }
                 } else if (event instanceof RequireUserConfirmEvent confirm) {
                     pendingConfirm = confirm;
@@ -265,15 +275,18 @@ public class SessionService {
     }
 
     /** Appends a streamed result chunk to the matching in-flight call, tolerating id/name mismatches. */
-    private void appendResult(Map<String, CallAcc> pending, String id, String name, String text) {
-        appendResult(pending, id, name, text, false);
+    private void appendResult(Map<String, CallAcc> pending, String id, String name, String text,
+                              ChatStreamListener listener) {
+        appendResult(pending, id, name, text, false, listener);
     }
 
-    private void appendResult(Map<String, CallAcc> pending, String id, String name, String text, boolean asProgress) {
+    private void appendResult(Map<String, CallAcc> pending, String id, String name, String text,
+                              boolean asProgress, ChatStreamListener listener) {
         if (text == null || text.isEmpty()) return;
         CallAcc acc = findAcc(pending, id, name);
         if (acc == null) return;
         if (asProgress) acc.progress.append(text); else acc.result.append(text);
+        listener.onToolResult(id == null ? acc.name : id, acc.name, text);
     }
 
     /** Matches a pending call by exact id first, then falls back to a unique open call with the same name. */

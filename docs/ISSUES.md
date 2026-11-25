@@ -166,3 +166,34 @@
 - 复测结果：全新数据卷启动成功，`Started AegisApplication`，admin/claw 种子数据自动创建，无 `no such table` 错误。
 
 ---
+
+---
+
+### ISSUE-014  切换会话/标签页后正在运行或刚完成的回复消失（必须刷新才出现）
+- 发现时间：2026-11-25（Alan 实测反馈）
+- 现象：对话流式中切换到其他会话或管理后台，再返回时流式气泡与已完成回复都不见了；刷新页面后回复才出现
+- 根因：`ChatView` 把 messages/stream/busy 全放在组件局部 state；切页导致组件卸载，SSE 回调仍继续跑但 `setState` 落在已卸载实例上被丢弃；返回时只从服务端已落库消息读取，而助手消息要等整轮结束才入库，运行中/未同步完成的内容全部丢失
+- 修复：新增 `frontend/src/chatStore.ts` 模块级会话状态（按 sessionId 分区、SSE 回调直接写入 store），`ChatView` 通过 `useSyncExternalStore` 订阅；状态与组件生命周期解耦，切页/切会话/进管理后台期间 SSE 持续更新，返回即恢复当前状态；完成时把 `toolCallsJson` 随 done 事件回传以保留结构化轨迹数据
+- 复测：Playwright 实测①运行中切到第 2 个会话再切回：流式气泡 + 思考块仍在（back_streaming=1）；②切到管理后台等待 26 秒完成后返回：助手回复已在、无流式气泡、无需刷新（has_done=true）
+
+---
+
+### ISSUE-015  轨迹视图不是流式的，运行中看不到工具调用
+- 发现时间：2026-11-25（Alan 实测反馈）
+- 现象：轨迹页只在打开时从 `/trajectory` 拉一次已落库数据；运行中的工具调用、参数、结果都不显示，必须等整轮结束再刷新
+- 根因：后端 SSE 只有 `tool`（工具名）细粒度事件缺失；轨迹数据源仅为落库后的 `chat_message.tool_calls`，前端 TrajectoryView 无订阅机制
+- 修复：
+  - 后端 `ChatStreamListener` 增加 `onToolStart/onToolArgs/onToolResult/onToolEnd`，`SessionService` 在事件流各阶段回调；`SessionController` 转发为 SSE 帧 `tool_start/tool_args/tool_result/tool_end`（带 id、参数增量、结果增量、耗时、错误标记）
+  - 前端 `chatStore` 按会话聚合实时工具记录；`TrajectoryView` 订阅 store，在运行中追加"实时行"（运行中工具带脉冲标记、实时参数/结果）；轮次结束后自动重新拉取 `/trajectory` 用持久化数据替换
+- 复测：SSE API 实测帧序 `thinking×82 → tool → tool_start → tool_args×6 → tool_result → tool_end → delta×28 → done`；Playwright 实测运行中轨迹实时行出现（live_rows=2、running_tags=1），结束后工具行保留完整结果（tool_rows=1、has_ui_verify=true）
+
+---
+
+### ISSUE-016  模型思考模式被关闭，工具调用来得太突然
+- 发现时间：2026-11-25（Alan 实测反馈）
+- 现象：每次回复直接"开始执行工具"，没有可见思考过程
+- 根因：`AgentRegistry.buildModel()` 为规避 ISSUE-004 的转圈问题显式下发 `chat_template_kwargs.enable_thinking=false`；前端 `onThinking` 回调只切换 phase、丢弃文本
+- 修复：
+  - `AgentRegistry` 默认开启 thinking（`AEGIS_MODEL_THINKING=false` 可回退关闭），标题生成仍单独禁用以保持_auxiliary 调用短平快
+  - 前端 store 累积 thinking 增量并在流式气泡中以「💭 思考过程」折叠块展示；轨迹详情里也保留思考文本
+- 复测：容器日志 `Model thinking enabled`；SSE 实测 `thinking` 帧 82 个；Playwright 实测思考块在切页返回后仍可见（thinking_len>0）

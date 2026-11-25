@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { marked } from 'marked';
-import { api, AgentInfo, CurrentUser, Message, SessionInfo, clearToken, getToken } from './api';
+import { api, AgentInfo, CurrentUser, SessionInfo, clearToken, getToken } from './api';
+import { useChatState, ensureLoaded, sendChat } from './chatStore';
 
 marked.setOptions({ gfm: true, breaks: true });
 
@@ -77,12 +78,10 @@ function ChatView({
   onPermissionChange: (mode: string) => void;
   onTitle?: (title: string) => void;
 }) {
-  const [messages, setMessages] = useState<Message[]>([]);
+  const chat = useChatState(session.id);
+  const { messages, stream, busy } = chat;
   const [text, setText] = useState('');
-  const [busy, setBusy] = useState(false);
   const [mode, setMode] = useState(session.permissionMode);
-  const [stream, setStream] = useState<{ content: string; tool: string; phase: 'thinking' | 'tool' | 'answering' } | null>(null);
-  const partialRef = useRef('');
   const endRef = useRef<HTMLDivElement>(null);
   // Only follow the tail while the user is pinned near the bottom; never steal
   // scroll position when they scroll up to read history during streaming.
@@ -91,7 +90,7 @@ function ChatView({
   const [showJump, setShowJump] = useState(false);
 
   useEffect(() => {
-    api.getMessages(session.id).then(setMessages).catch(() => setMessages([]));
+    ensureLoaded(session.id);
     setMode(session.permissionMode);
     pinnedRef.current = true;
     setShowJump(false);
@@ -116,40 +115,16 @@ function ChatView({
       const el = areaRef.current;
       if (el) setShowJump(el.scrollHeight - el.scrollTop - el.clientHeight > 200);
     }
-  }, [stream?.content, stream?.phase]);
+  }, [stream?.content, stream?.thinking, stream?.phase]);
 
   async function send() {
     if (!text.trim() || busy) return;
     const content = text;
-    setText(''); setBusy(true); partialRef.current = '';
+    setText('');
     pinnedRef.current = true; setShowJump(false);
-    setMessages(m => [...m, { role: 'user', content, toolCalls: '', createdAt: '' }]);
-    setStream({ content: '', tool: '', phase: 'thinking' });
-    try {
-      const res = await api.chatStream(session.id, content, {
-        onDelta: d => {
-          partialRef.current += d;
-          setStream(s => s && { ...s, content: s.content + d, phase: 'answering' });
-        },
-        onThinking: () => setStream(s => s && { ...s, phase: 'thinking' }),
-        onTool: name => setStream(s => s && { ...s, tool: name, phase: 'tool' }),
-      });
-      if (res.title) onTitle?.(res.title);
-      setMessages(m => [...m, {
-        role: 'assistant',
-        content: res.reply || partialRef.current || '（无回复）',
-        toolCalls: res.toolCalls.join(', '),
-        createdAt: '',
-      }]);
-    } catch (e: any) {
-      const partial = partialRef.current;
-      const errText = partial
-        ? partial + '\n\n[中断] ' + e.message
-        : '[错误] ' + e.message;
-      setMessages(m => [...m, { role: 'assistant', content: errText, toolCalls: '', createdAt: '' }]);
-    } finally {
-      setStream(null); setBusy(false);
-    }
+    // State lives in chatStore: switching pages/tabs during the run no longer
+    // drops the stream — callbacks keep updating even while this view is away.
+    await sendChat(session.id, content, t => onTitle?.(t));
   }
 
   async function changeMode(newMode: string) {
@@ -185,10 +160,16 @@ function ChatView({
           <div className="msg">
             <div className="avatar">AI</div>
             <div className="bubble streaming">
+              {stream.thinking && (
+                <details className="thinking" open>
+                  <summary>💭 思考过程</summary>
+                  <div className="thinking-body">{stream.thinking}</div>
+                </details>
+              )}
               {stream.phase === 'tool' && (
                 <div className="stream-status">⚙ 正在调用工具 {stream.tool}…</div>
               )}
-              {stream.phase === 'thinking' && !stream.content && (
+              {stream.phase === 'thinking' && !stream.content && !stream.thinking && (
                 <div className="stream-status">思考中…</div>
               )}
               {stream.content
@@ -224,7 +205,7 @@ function ChatView({
   );
 }
 
-interface ToolRec { name: string; args: string; result: string; startedAt: number; durationMs: number; error: boolean }
+interface ToolRec { name: string; args: string; result: string; startedAt: number; durationMs?: number; error: boolean; done?: boolean }
 
 interface TrajRow {
   kind: 'user' | 'message' | 'tool';
@@ -235,6 +216,7 @@ interface TrajRow {
   rec?: ToolRec;           // tool record for inspector tabs
   createdAt: string;
   durationMs?: number;     // assistant turn duration
+  live?: boolean;          // in-flight row (not yet persisted)
 }
 
 function fmtMs(ms: number): string {
@@ -248,14 +230,25 @@ function TrajectoryView({ sessionId }: { sessionId: string }) {
   const [collapsedTurns, setCollapsedTurns] = useState<Set<number>>(new Set());
   const [selected, setSelected] = useState<number | null>(null);
   const [query, setQuery] = useState('');
+  const chat = useChatState(sessionId);
+  const wasBusy = useRef(false);
+
   useEffect(() => {
     setSelected(null); setQuery(''); setCollapsedTurns(new Set());
     api.trajectory(sessionId).then(setData).catch(() => setData(null));
   }, [sessionId]);
+  // Reload persisted trajectory when a live turn finishes (tool results become final).
+  useEffect(() => {
+    if (wasBusy.current && !chat.busy) {
+      api.trajectory(sessionId).then(setData).catch(() => {});
+    }
+    wasBusy.current = chat.busy;
+  }, [chat.busy, sessionId]);
 
   if (!data) return <div className="traj"><div className="traj-loading">加载轨迹中…</div></div>;
 
-  // Build DSH-style rows: turn → (user | assistant message | tool calls)
+  // Build DSH-style rows: turn → (user | assistant message | tool calls),
+  // then append the in-flight turn from the shared chat store (live SSE state).
   const rows: TrajRow[] = [];
   let turn = 0;
   for (const m of data.messages as any[]) {
@@ -283,6 +276,42 @@ function TrajectoryView({ sessionId }: { sessionId: string }) {
       });
     }
   }
+
+  // In-flight turn, read from the shared store — updated live by SSE even if
+  // this view was unmounted while the turn was running.
+  const persistedUsers = (data.messages as any[]).filter(m => m.role === 'user').length;
+  const allUsers = chat.messages.filter(m => m.role === 'user');
+  const liveUser = allUsers.length > persistedUsers ? allUsers[allUsers.length - 1] : null;
+  if (chat.busy || liveUser) {
+    const liveTurn = turn + 1;
+    if (liveUser) {
+      rows.push({ kind: 'user', turn: liveTurn,
+        text: liveUser.content?.replace(/\s+/g, ' ').trim() || '(空)',
+        detail: liveUser.content || '', createdAt: '', live: true });
+    }
+    const st = chat.stream;
+    if (st) {
+      const text = st.content?.replace(/\s+/g, ' ').trim()
+        || (st.thinking ? '💭 正在思考…' : '执行中…');
+      rows.push({ kind: 'message', turn: liveTurn, text,
+        detail: (st.thinking ? '思考过程：\n' + st.thinking + '\n\n' : '') + (st.content || ''),
+        createdAt: '', live: true });
+    }
+    for (const t of chat.tools) {
+      const args = t.args?.replace(/\s+/g, ' ').trim() || '';
+      const result = t.result?.replace(/\s+/g, ' ').trim() || '';
+      rows.push({
+        kind: 'tool', turn: liveTurn,
+        text: t.name + (args ? ' ' + args : ''),
+        detail: t.name + (t.args ? '\n\n' + t.args : ''),
+        result: result || undefined,
+        rec: { name: t.name, args: t.args, result: t.result, startedAt: t.startedAt,
+               durationMs: t.durationMs, error: t.error, done: t.done },
+        createdAt: '', durationMs: t.durationMs, live: true,
+      });
+    }
+  }
+
   // per-turn summary data for collapsed rows
   const turnSummaries = new Map<number, { steps: number; tools: number }>();
   for (const r of rows) {
@@ -304,7 +333,7 @@ function TrajectoryView({ sessionId }: { sessionId: string }) {
         data-kind={asSummary ? 'summary' : r.kind}
         data-selected={selected === i || undefined}
         data-error={r.rec?.error || undefined}
-        className={asSummary ? 'summary-row' : (selected === i ? 'selected-row' : '')}
+        className={asSummary ? 'summary-row' : (r.live ? 'live-row' : (selected === i ? 'selected-row' : ''))}
         onClick={() => !asSummary && setSelected(i)}>
       <td className="traj-event">
         <span className="turn-rail" />
@@ -318,6 +347,7 @@ function TrajectoryView({ sessionId }: { sessionId: string }) {
             ? <span className="tool-line">
                 <span className="tool-call">{r.text.slice(0, 160)}</span>
                 {r.result && <span className={'tool-result' + (r.rec?.error ? ' is-error' : '')}>→ {r.result.slice(0, 120)}</span>}
+                {r.live && r.rec && !r.rec.done && <span className="tool-running">运行中…</span>}
               </span>
             : <span className="content-text">{r.text.slice(0, 200)}</span>}
       </td>
@@ -371,7 +401,7 @@ function TrajectoryView({ sessionId }: { sessionId: string }) {
           <aside className="traj-details">
             <div className="details-head">
               <span className={`kind-chip chip-${sel.kind}`}>{kindLabel[sel.kind]}</span>
-              <span className="details-time">{sel.createdAt}</span>
+              <span className="details-time">{sel.createdAt || (sel.live ? '实时' : '')}</span>
               <button className="details-close" onClick={() => setSelected(null)}>✕</button>
             </div>
             <div className="details-body">
@@ -380,8 +410,9 @@ function TrajectoryView({ sessionId }: { sessionId: string }) {
                   <div className="details-tab">概述</div>
                   <dl className="kv">
                     <dt>工具</dt><dd className="mono">{sel.rec.name}</dd>
-                    <dt>耗时</dt><dd>{fmtMs(sel.rec.durationMs)}</dd>
-                    <dt>状态</dt><dd className={sel.rec.error ? 'err' : 'ok'}>{sel.rec.error ? '失败' : '完成'}</dd>
+                    <dt>耗时</dt><dd>{fmtMs(sel.rec.durationMs ?? (sel.live && sel.rec.done === false ? Date.now() - sel.rec.startedAt : 0))}</dd>
+                    <dt>状态</dt><dd className={sel.rec.error ? 'err' : (sel.rec.done === false ? 'running' : 'ok')}>
+                      {sel.rec.error ? '失败' : (sel.rec.done === false ? '运行中' : '完成')}</dd>
                   </dl>
                   <div className="details-tab">参数</div>
                   <pre className="payload">{sel.rec.args || '(无参数)'}</pre>
@@ -534,7 +565,7 @@ function Workspace({ user, onLogout }: { user: CurrentUser; onLogout: () => void
           <div className="ws-group">
             <div className="ws-title">工作区 · 默认</div>
             {sessions.map(s => (
-              <div key={s.id} className={`sess-item ${current?.id === s.id ? 'active' : ''}`} onClick={() => openSession(s)}>
+              <div key={s.id} data-session-id={s.id} className={`sess-item ${current?.id === s.id ? 'active' : ''}`} onClick={() => openSession(s)}>
                 <span>{s.title || s.id.slice(0, 8)}</span>
               </div>
             ))}

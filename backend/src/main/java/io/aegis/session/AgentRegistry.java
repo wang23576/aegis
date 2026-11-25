@@ -38,12 +38,17 @@ public class AgentRegistry {
         String apiKey = System.getenv().getOrDefault("AEGIS_MODEL_API_KEY", "sk-local-placeholder").trim();
         String modelName = System.getenv().getOrDefault("AEGIS_MODEL_NAME", "gpt-4o-mini").trim();
         log.info("Building OpenAI-compatible model: baseUrl={}, model={}", baseUrl, modelName);
-        // Mirror paw's TalkwebModelConfig: gpu-qwen3.8-27b is a thinking model; disable
-        // chain-of-thought via the vLLM chat template so replies return directly (no endless spinner).
+        // gpu-qwen3.8-27b is a thinking model. Thinking is enabled by default so the
+        // client can show reasoning before tool calls; set AEGIS_MODEL_THINKING=false
+        // to restore the old "no visible reasoning" behaviour. TitleService still
+        // disables thinking explicitly for its short auxiliary call.
+        boolean thinking = Boolean.parseBoolean(
+                System.getenv().getOrDefault("AEGIS_MODEL_THINKING", "true").trim());
         GenerateOptions options = GenerateOptions.builder()
                 .additionalBodyParams(Map.of(
-                        "chat_template_kwargs", Map.of("enable_thinking", false)))
+                        "chat_template_kwargs", Map.of("enable_thinking", thinking)))
                 .build();
+        log.info("Model thinking {}", thinking ? "enabled" : "disabled");
         return OpenAIChatModel.builder()
                 .apiKey(apiKey)
                 .baseUrl(baseUrl)

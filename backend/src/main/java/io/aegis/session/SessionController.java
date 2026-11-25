@@ -132,14 +132,30 @@ public class SessionController {
                 @Override public void onTool(String tool) {
                     try { sendEvent(writer, mapper, "tool", Map.of("name", tool)); } catch (IOException ignored) { }
                 }
+                @Override public void onToolStart(String id, String name) {
+                    try { sendEvent(writer, mapper, "tool_start", Map.of("id", id, "name", name)); } catch (IOException ignored) { }
+                }
+                @Override public void onToolArgs(String id, String name, String delta) {
+                    try { sendEvent(writer, mapper, "tool_args", Map.of("id", id, "delta", delta)); } catch (IOException ignored) { }
+                }
+                @Override public void onToolResult(String id, String name, String delta) {
+                    try { sendEvent(writer, mapper, "tool_result", Map.of("id", id, "delta", delta)); } catch (IOException ignored) { }
+                }
+                @Override public void onToolEnd(String id, String name, long durationMs, boolean error) {
+                    try { sendEvent(writer, mapper, "tool_end",
+                            Map.of("id", id, "durationMs", durationMs, "error", error)); } catch (IOException ignored) { }
+                }
             });
             sessions.saveMessage(id, "assistant", result.reply(), result.toolCallsJson());
             if (firstTurn) titles.generateFor(id);
             // Re-read so the freshly generated title reaches the client in done.
             String title = sessions.get(id, uid()).map(SessionService.Session::title).orElse(null);
-            sendEvent(writer, mapper, "done",
-                    Map.of("reply", result.reply(), "toolCalls", result.toolCalls(),
-                            "title", title == null ? "" : title));
+            Map<String, Object> done = new LinkedHashMap<>();
+            done.put("reply", result.reply());
+            done.put("toolCalls", result.toolCalls());
+            done.put("toolCallsJson", result.toolCallsJson() == null ? "" : result.toolCallsJson());
+            done.put("title", title == null ? "" : title);
+            sendEvent(writer, mapper, "done", done);
         } catch (Exception e) {
             String err = "[Error] " + e.getClass().getSimpleName() + ": " + e.getMessage();
             sessions.saveMessage(id, "assistant", err, null);
