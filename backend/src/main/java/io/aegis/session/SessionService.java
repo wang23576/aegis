@@ -589,10 +589,9 @@ public class SessionService {
                 String status = String.valueOf(s.getOrDefault("status", "complete"));
                 Number dur = (Number) s.get("durationMs");
                 totalMs += dur == null ? 0 : dur.longValue();
-                rows.add(row("message", turn, stepNo, stepNo * 10,
-                        content.isEmpty() ? (thinking.isEmpty() ? "（仅工具调用）" : "💭 " + preview(thinking, 160)) : preview(content, 240),
-                        content, thinking, "", null,
-                        dur == null ? null : dur.longValue(), status));
+                // 1:1 ledger: each model call contributes its own THINKING row
+                // and its own REPLY row. Never merge thinking into the reply row —
+                // the trajectory is the audit trail used to replay what happened.
                 Map<String, Object> extra = new LinkedHashMap<>();
                 extra.put("usage", s.get("usage"));
                 extra.put("startedAt", s.get("startedAt"));
@@ -600,7 +599,13 @@ public class SessionService {
                 extra.put("endedAt", s.get("endedAt"));
                 extra.put("interrupted", s.get("interrupted"));
                 extra.put("stepNo", stepNo);
-                rows.get(rows.size() - 1).put("meta", extra);
+                if (!thinking.isEmpty()) {
+                    Map<String, Object> thinkRow = row("thinking", turn, stepNo, stepNo * 10,
+                            preview(thinking, 240), thinking, "", "", null,
+                            dur == null ? null : dur.longValue(), status);
+                    thinkRow.put("meta", new LinkedHashMap<>(extra));
+                    rows.add(thinkRow);
+                }
 
                 List<?> tools = parseList(mapper, String.valueOf(s.getOrDefault("toolCalls", "")));
                 for (Object o : tools) {
@@ -616,6 +621,13 @@ public class SessionService {
                             Boolean.TRUE.equals(tm.get("error")) ? "failed" : (Boolean.TRUE.equals(tm.get("done")) ? "complete" : "running"));
                     toolRow.put("result", result);
                     rows.add(toolRow);
+                }
+                if (!content.isEmpty() || (thinking.isEmpty() && tools.isEmpty())) {
+                    Map<String, Object> msgRow = row("message", turn, stepNo, stepNo * 10 + 2,
+                            content.isEmpty() ? "（仅工具调用）" : preview(content, 240),
+                            content, "", "", null, dur == null ? null : dur.longValue(), status);
+                    msgRow.put("meta", extra);
+                    rows.add(msgRow);
                 }
             }
         } else {
@@ -675,6 +687,11 @@ public class SessionService {
                     data, "", String.valueOf(e.getOrDefault("createdAt", "")), null, null, "complete"));
             Map<String, Object> meta = new LinkedHashMap<>();
             meta.put("seq", e.get("seq")); meta.put("eventType", type);
+            // Harness bookkeeping events (tool observation / context build) are
+            // retained in the raw log but hidden from the main ledger by default.
+            String dataText = data == null ? "" : data;
+            meta.put("internal", "CUSTOM".equals(type)
+                    && (dataText.startsWith("action_observation") || dataText.startsWith("context_build")));
             rows.get(rows.size() - 1).put("meta", meta);
         }
         rows.sort(Comparator.comparingInt((Map<String, Object> r) -> (Integer) r.get("turn"))

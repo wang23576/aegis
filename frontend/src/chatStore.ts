@@ -113,10 +113,13 @@ function patchTool(sessionId: string, id: string, change: (t: LiveTool) => LiveT
 }
 
 function patchStep(sessionId: string, stepNo: number | undefined, change: (s: LiveStep) => LiveStep): void {
+  // Deltas without an explicit step number belong to the CURRENT (last started)
+  // model call only. Never fan a delta out to every step — that duplicated the
+  // streaming reply into earlier folded steps (ISSUE-021).
+  const steps = getChatState(sessionId).liveSteps;
+  const active = steps[steps.length - 1];
   patch(sessionId, {
-    liveSteps: getChatState(sessionId).liveSteps.map(s =>
-      (stepNo == null ? s === getChatState(sessionId).liveSteps[s.stepNo - 1]
-        : s.stepNo === stepNo) ? change(s) : s),
+    liveSteps: steps.map(s => (stepNo == null ? s === active : s.stepNo === stepNo) ? change(s) : s),
   });
 }
 

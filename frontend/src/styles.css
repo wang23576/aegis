@@ -166,6 +166,7 @@ input, textarea, select { font-family: inherit; }
   border-radius: 3px; font-size: 10px; font-weight: 650; letter-spacing: 0.03em; vertical-align: middle; }
 .chip-user { color: #1d6ae5; background: #e8f0fe; }
 .chip-message { color: #7c3aed; background: #f1e9fe; }
+.chip-thinking { color: #4f46e5; background: #eef2ff; }
 .chip-tool { color: #b45309; background: #fdf0d5; }
 
 .traj-table tr[data-kind='tool'] td.traj-content { font-family: Menlo, Consolas, 'Courier New', monospace; }

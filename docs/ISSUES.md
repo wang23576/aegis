@@ -259,3 +259,20 @@
   - 完成后：流式光标归零、最终回答整宽显示（tmp/chat_live_done.png）
   - 轨迹：15 行 = 用户×1 + 助手步骤×3 + 工具×2 + 事件×9；用户行保留 `list_files`、事件行保留 `action_observation`/`tool_call_id`，无反引号等 Markdown 残留（tmp/traj_after.png）
   - 注意：发送按钮在输入框为空时也会禁用，验证"运行中"应看按钮文案"回复中…/发送"，不能只看 disabled
+
+---
+
+### ISSUE-021  运行中前序步骤混入当前回复 + 轨迹思考与回复仍同行 + 框架内部事件干扰
+- 发现时间：2026-11-25（Alan 截图反馈：运行中前后步骤同时出现回复内容；轨迹里 action_observation 是什么、思考与回复为何在一条记录）
+- 根因：
+  1. `chatStore.patchStep(undefined)` 用 `liveSteps[s.stepNo - 1]` 判断目标，导致每个 step 都命中自身，同一段增量被写进所有进行中的 step；旧步骤折叠块里也出现当前回复（完成后重新落库所以正常）
+  2. 后端 `/trajectory` 每个 step 只产一条 `message` 行，`thinking` 作为附属字段塞在同一行详情里，不满足"每次 LLM 调用的思考与回复各自成记录"的核对要求
+  3. agentscope-core 的 `ActionObserver` 会在工具执行 STARTED/RETURNED 时发 CUSTOM `action_observation`（`action_observation` 常量见 `core/observation/ActionObserver.class`、`ActionObservations.class`），`ModelRequestPreparer` 发 CUSTOM `context_build`；这些是框架内部审计事件，不是助手内容，逐条铺在主轨迹里造成干扰
+- 修复：
+  - `patchStep` 无步号时只更新当前（最后一个启动的）step；前序步骤保留自己的内容
+  - `/trajectory` 每次模型调用拆成独立 `thinking` 行（完整思考）+ `message` 行（完整回复），工具仍独立成行；前端增加 `thinking` 行类型、标签、详情面板与实时行投影
+  - CUSTOM `action_observation` / `context_build` 在行 meta 标 internal，主轨迹默认隐藏，工具栏「内部事件 (N)」开关可随时展开；原始事件日志与导出 zip 不受影响
+- 复测：
+  - Playwright 运行中截取正在输出的气泡与前序步骤：`earlierBodies` 只含该步自己的思考+工具，不含当前回复（tmp/issue021_live_text.png）
+  - 轨迹默认 2 思考行 + 1 回复行 + 3 工具行 + 2 关键事件行；点「内部事件」后新增 8 条框架审计行（tmp/issue021_traj_clean.png / issue021_traj_all.png）
+  - 详情面板：点思考行显示"思考过程（本次模型调用）"+完整思考；点回复行只显示回复正文，不再重复思考

@@ -300,7 +300,7 @@ function ChatView({
 interface ToolRec { name: string; args: string; result: string; startedAt: number; durationMs?: number; error: boolean; done?: boolean }
 
 interface TrajRow {
-  kind: 'user' | 'message' | 'tool' | 'context' | 'compacted' | 'system' | 'subtool';
+  kind: 'user' | 'thinking' | 'message' | 'tool' | 'context' | 'compacted' | 'system' | 'subtool';
   turn: number;
   stepNo?: number;
   text: string;            // single-line summary
@@ -380,11 +380,12 @@ function TrajectoryView({ sessionId }: { sessionId: string }) {
   const [selected, setSelected] = useState<number | null>(null);
   const [query, setQuery] = useState('');
   const [detailRaw, setDetailRaw] = useState(false);
+  const [showInternal, setShowInternal] = useState(false);
   const chat = useChatState(sessionId);
   const wasBusy = useRef(false);
 
   useEffect(() => {
-    setSelected(null); setQuery(''); setCollapsedTurns(new Set()); setDetailRaw(false);
+    setSelected(null); setQuery(''); setCollapsedTurns(new Set()); setDetailRaw(false); setShowInternal(false);
     api.trajectory(sessionId).then(setData).catch(() => setData(null));
   }, [sessionId]);
   // Reload persisted trajectory when a live turn finishes (tool results become final).
@@ -403,12 +404,15 @@ function TrajectoryView({ sessionId }: { sessionId: string }) {
   let turn = 0;
   if (Array.isArray(data.rows) && data.rows.length) {
     for (const r of data.rows as any[]) {
+      // Harness bookkeeping (action_observation / context_build) stays in the
+      // raw audit log; hide it from the main ledger unless explicitly requested.
+      if (r.meta?.internal && !showInternal) continue;
       const tool = r.kind === 'tool' || r.kind === 'subtool';
       rows.push({
         kind: r.kind, turn: r.turn || 0, stepNo: r.stepNo || 0,
         text: tool ? (r.text + (argPreview(r.detail) ? ' ' + argPreview(r.detail) : '')) : plainText(r.text || ''),
         detail: tool ? (r.text + (r.detail ? '\n\n' + prettyJson(r.detail) : '')) : (r.detail || ''),
-        thinking: r.thinking || '',
+        thinking: '',
         result: tool ? (resultPreview(r.result) || undefined) : undefined,
         rec: tool ? {
           name: r.text, args: r.detail || '', result: r.result || '',
@@ -463,13 +467,14 @@ function TrajectoryView({ sessionId }: { sessionId: string }) {
         text: plainText(pendingUser.content) || '(空)', detail: pendingUser.content || '',
         createdAt: '', live: true });
     }
-    // One row per in-flight model call, so thinking → tool → thinking → reply
-    // is visible in the ledger while the turn is running.
+    // One model call → its own thinking row and reply row; tools stay separate.
     for (const s of chat.liveSteps) {
-      rows.push({ kind: 'message', turn: liveTurn, stepNo: s.stepNo,
-        text: plainText(s.content) || (s.thinking ? '💭 正在思考…' : (s.tools.length ? '⚙ 工具调用中…' : '执行中…')),
-        detail: s.content || '', thinking: s.thinking || '', createdAt: '',
-        startedAt: undefined, durationMs: s.durationMs, status: s.status, live: true });
+      if (s.thinking) {
+        rows.push({ kind: 'thinking', turn: liveTurn, stepNo: s.stepNo,
+          text: '💭 ' + (plainText(s.thinking, 240) || '正在思考…'),
+          detail: s.thinking, createdAt: '', durationMs: s.durationMs,
+          status: s.status, live: true });
+      }
       for (const t of s.tools) {
         rows.push({ kind: 'tool', turn: liveTurn, stepNo: s.stepNo,
           text: t.name + (argPreview(t.args) ? ' ' + argPreview(t.args) : ''),
@@ -479,6 +484,12 @@ function TrajectoryView({ sessionId }: { sessionId: string }) {
                  durationMs: t.durationMs, error: t.error, done: t.done },
           createdAt: '', durationMs: t.durationMs,
           status: t.done ? (t.error ? 'failed' : 'complete') : 'running', live: true });
+      }
+      if (s.content || (!s.thinking && !s.tools.length)) {
+        rows.push({ kind: 'message', turn: liveTurn, stepNo: s.stepNo,
+          text: plainText(s.content) || (s.tools.length ? '⚙ 工具调用中…' : '执行中…'),
+          detail: s.content || '', createdAt: '',
+          durationMs: s.durationMs, status: s.status, live: true });
       }
     }
     for (const e of chat.runtimeEvents) {
@@ -536,9 +547,10 @@ function TrajectoryView({ sessionId }: { sessionId: string }) {
 
   const totalMs = (data.durationMs as number) || 0;
   const sel = selected != null ? rows[selected] : null;
+  const internalCount = ((data.rows || []) as any[]).filter(r => r.meta?.internal).length;
 
   const kindLabel = {
-    user: '用户', message: '助手', tool: '工具', subtool: '子工具',
+    user: '用户', thinking: '思考', message: '助手', tool: '工具', subtool: '子工具',
     context: '事件', compacted: '压缩', system: '系统',
   } as const;
   const renderRow = (r: TrajRow, i: number, asSummary = false) => (
@@ -558,7 +570,8 @@ function TrajectoryView({ sessionId }: { sessionId: string }) {
         <span className="turn-rail" />
         {r.turn > 0 && (i === 0 || rows[i - 1].turn !== r.turn) && <span className="turn-label">第 {r.turn} 轮</span>}
         {!asSummary && <span className={`kind-chip chip-${r.kind}`}>{kindLabel[r.kind]}</span>}
-        {!asSummary && r.kind === 'message' && r.stepNo ? <span className="step-tag">第 {r.stepNo} 步</span> : null}
+        {!asSummary && (r.kind === 'message' || r.kind === 'thinking') && r.stepNo
+          ? <span className="step-tag">第 {r.stepNo} 步</span> : null}
       </td>
       <td className="traj-content">
         {asSummary
@@ -605,6 +618,12 @@ function TrajectoryView({ sessionId }: { sessionId: string }) {
             setCollapsedTurns(collapsedTurns.size ? new Set() : new Set(turnSummaries.keys()))}>
             {collapsedTurns.size ? '⊞ 展开轮次' : '⊟ 折叠轮次'}
           </button>
+          {internalCount > 0 && (
+            <button className="traj-toggle" title="框架内部记录：工具观测、上下文构建等（原始日志始终保留）"
+                    onClick={() => setShowInternal(!showInternal)}>
+              {showInternal ? `⊟ 隐藏内部事件 (${internalCount})` : `⊞ 内部事件 (${internalCount})`}
+            </button>
+          )}
         </div>
         <input className="traj-search" type="search" placeholder="搜索轨迹…"
                value={query} onChange={e => setQuery(e.target.value)} />
@@ -648,7 +667,9 @@ function TrajectoryView({ sessionId }: { sessionId: string }) {
                 </>
               ) : (
                 <>
-                  <div className="details-tab">{sel.kind === 'user' ? '用户消息' : sel.kind === 'context' ? '运行时事件' : '助手回复'}</div>
+                  <div className="details-tab">{sel.kind === 'user' ? '用户消息'
+                    : sel.kind === 'context' ? '运行时事件'
+                    : sel.kind === 'thinking' ? '思考过程（本次模型调用）' : '助手回复'}</div>
                   {sel.durationMs != null && <div className="details-duration">耗时 {fmtMs(sel.durationMs)}</div>}
                   {sel.thinking && (
                     <>
