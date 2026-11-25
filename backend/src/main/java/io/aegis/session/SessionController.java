@@ -72,7 +72,27 @@ public class SessionController {
     @GetMapping("/{id}/messages")
     public ResponseEntity<?> messages(@PathVariable String id) {
         sessions.get(id, uid()).orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND));
-        return ResponseEntity.ok(sessions.messages(id));
+        // Embed per-LLM-call steps in their owning turn so the chat view can show
+        // thinking → tool → thinking → reply as separate step blocks (DSH parity).
+        List<Map<String, Object>> out = new ArrayList<>();
+        List<Map<String, Object>> steps = sessions.steps(id);
+        int turn = 0;
+        for (SessionService.Message m : sessions.messages(id)) {
+            Map<String, Object> item = new LinkedHashMap<>();
+            item.put("role", m.role());
+            item.put("content", m.content() == null ? "" : m.content());
+            item.put("toolCalls", m.toolCalls() == null ? "" : m.toolCalls());
+            item.put("createdAt", m.createdAt() == null ? "" : m.createdAt());
+            if ("user".equals(m.role())) {
+                turn++;
+            } else {
+                final int t = turn;
+                item.put("steps", steps.stream()
+                        .filter(s -> s.get("turnNo") instanceof Number n && n.intValue() == t).toList());
+            }
+            out.add(item);
+        }
+        return ResponseEntity.ok(out);
     }
 
     @PostMapping("/{id}/chat")
@@ -132,8 +152,22 @@ public class SessionController {
                 @Override public void onTool(String tool) {
                     try { sendEvent(writer, mapper, "tool", Map.of("name", tool)); } catch (IOException ignored) { }
                 }
-                @Override public void onToolStart(String id, String name) {
-                    try { sendEvent(writer, mapper, "tool_start", Map.of("id", id, "name", name)); } catch (IOException ignored) { }
+                @Override public void onToolStart(String id, String name, int stepNo) {
+                    try { sendEvent(writer, mapper, "tool_start",
+                            Map.of("id", id, "name", name, "stepNo", stepNo)); } catch (IOException ignored) { }
+                }
+                @Override public void onStepStart(int stepNo, String replyId) {
+                    try { sendEvent(writer, mapper, "step_start",
+                            Map.of("stepNo", stepNo, "replyId", replyId)); } catch (IOException ignored) { }
+                }
+                @Override public void onStepEnd(int stepNo, long durationMs, String usageJson) {
+                    try { sendEvent(writer, mapper, "step_end",
+                            Map.of("stepNo", stepNo, "durationMs", durationMs,
+                                    "usage", usageJson == null ? "{}" : usageJson)); } catch (IOException ignored) { }
+                }
+                @Override public void onEvent(String type, String summary) {
+                    try { sendEvent(writer, mapper, "runtime_event",
+                            Map.of("type", type, "summary", summary == null ? "" : summary)); } catch (IOException ignored) { }
                 }
                 @Override public void onToolArgs(String id, String name, String delta) {
                     try { sendEvent(writer, mapper, "tool_args", Map.of("id", id, "delta", delta)); } catch (IOException ignored) { }
@@ -154,6 +188,8 @@ public class SessionController {
             done.put("reply", result.reply());
             done.put("toolCalls", result.toolCalls());
             done.put("toolCallsJson", result.toolCallsJson() == null ? "" : result.toolCallsJson());
+            done.put("stepsJson", result.stepsJson() == null ? "" : result.stepsJson());
+            done.put("eventCount", result.eventCount());
             done.put("title", title == null ? "" : title);
             sendEvent(writer, mapper, "done", done);
         } catch (Exception e) {

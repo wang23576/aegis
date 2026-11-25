@@ -70,6 +70,19 @@ public class SessionLogExporter {
         }
         zip.closeEntry();
 
+        // steps.json — one record per LLM invocation (thinking/text/tool calls/usage).
+        zip.putNextEntry(new ZipEntry("steps.json"));
+        zip.write(mapper.writerWithDefaultPrettyPrinter()
+                .writeValueAsBytes(sessions.steps(sessionId)));
+        zip.closeEntry();
+
+        // events.jsonl — verbatim runtime event log (the 1:1 audit trail).
+        zip.putNextEntry(new ZipEntry("events.jsonl"));
+        for (Map<String, Object> e : sessions.events(sessionId)) {
+            zip.write((mapper.writeValueAsString(e) + "\n").getBytes(StandardCharsets.UTF_8));
+        }
+        zip.closeEntry();
+
         // trajectory.json — the same payload the trajectory view renders.
         zip.putNextEntry(new ZipEntry("trajectory.json"));
         zip.write(mapper.writerWithDefaultPrettyPrinter()

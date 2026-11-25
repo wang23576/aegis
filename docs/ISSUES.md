@@ -225,3 +225,21 @@
   - 剪贴板 `navigator.clipboard.writeText` 优先，`execCommand('copy')` 降级，复制后恢复原焦点；成功/失败 toast（`role=alert`）反馈
   - 外部 pointerdown 与 Escape 关闭（Escape 时焦点回到触发按钮），菜单项 autoFocus；会话行本身仍可点击打开
 - 复测：Playwright 实测菜单文案"复制 Session ID"、复制值与 `data-session-id` 完全一致（clip_match=true）、toast"Session ID 已复制"；Escape 关闭正常
+
+---
+
+### ISSUE-019  轨迹不是运行过程的 1:1 还原：多次 LLM 调用被塞进一条助手消息
+- 发现时间：2026-11-25（Alan 反馈："思考-调工具-思考-调工具-思考-回复"应对应多条轨迹记录；轨迹是反查核对的唯一依据）
+- 对照结论（DSH 源码 + agentscope-java 事件实证）：
+  - DSH 的层级是 turn > step，**一次模型调用 = 一个 step**，每步一条 `assistant/message`；工具调用/结果是独立记录；`ui-trajectory/layout.ts:706-801` 按 step 生成 MESSAGE 行、按 tool-call 生成 TOOL 行
+  - agentscope-java 有精确的 step 锚点：`ModelCallStartEvent` / `ModelCallEndEvent`（后者携带 ChatUsage 六种 token 计数），无需猜边界
+  - DSH 轨迹只有 7 种行（system/user/context/compacted/message/tool/subtool）；其余大量事件是日志/UI 元数据，不单独成行，但 DSH 会把原始事件全部留存供重建
+- 修复：
+  - 新增 `chat_event`（原始事件审计日志，逐条保存事件类型、replyId、toolCallId、blockId、createdAt、载荷）与 `chat_step`（每次 LLM 调用的 thinking/text/工具/usage/首 token/耗时/状态）两张表；zip 导出新增 `events.jsonl` + `steps.json`
+  - `SessionService` 以 `ModelCallStartEvent` 开 step、`ModelCallEndEvent` 收 step；文本/思考增量归所属 step，工具按 toolCallId 回填到发起它的 step；`RequestStopEvent(permission asking)` 标为 `awaiting-approval`，真实中断才标 `interrupted`
+  - `/trajectory` 返回 `rows`：user / message(每 step 一行) / tool(每次调用一行) / context(权限、确认、subagent、custom 等非内容事件)，按事件 seq 归位并排序；旧会话仍从 chat_message 兼容投影
+  - `/messages` 在每条助手消息内嵌 `steps`；前端 `chatStore` 实时维护 `liveSteps`，`StepBlocks` 将中间步骤折叠为"第 N 步 / 工具次数 / 耗时 / token"，最终无工具步骤作为可见回复；思考逐块折叠、工具独立展示
+  - 轨迹详情补充本次调用的完整思考、token 用量、步骤编号、毫秒级时间；聊天区对 REQUEST_STOP / ALL_TOOLS_DENIED / SUBAGENT_EXPOSED 等事件显示提示条
+- 复测：
+  - API：SSE 实测 `step_start×3 → thinking×601 → tool_start×3 → tool_end×3 → step_end×3 → done`；轨迹 rows = user×1 + message×3 + tool×3 + context×13，原始事件 901 条覆盖 21 种事件类型；zip 含 5 个文件（meta/session.jsonl/steps.json/events.jsonl/trajectory.json）
+  - Playwright：聊天区 2 个折叠过程步骤 + 1 个最终气泡、3 条工具行；轨迹 3 个"第 N 步"标签、3 条工具行、13 条事件行，详情可展开完整思考

@@ -1,8 +1,8 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { marked } from 'marked';
-import { api, AgentInfo, CurrentUser, SessionInfo, clearToken, getToken } from './api';
-import { useChatState, ensureLoaded, sendChat } from './chatStore';
+import { api, AgentInfo, CurrentUser, SessionInfo, StepView, clearToken, getToken } from './api';
+import { useChatState, ensureLoaded, sendChat, LiveStep, LiveTool } from './chatStore';
 
 marked.setOptions({ gfm: true, breaks: true });
 
@@ -71,6 +71,78 @@ function AgentChooser({ agents, onPick }: { agents: AgentInfo[]; onPick: (a: Age
   );
 }
 
+/** One LLM invocation, rendered DSH-style: process steps fold, final answer stays visible. */
+type StepLike = {
+  stepNo: number; thinking: string; content: string; tools: any[];
+  durationMs?: number; status?: string; usage?: Record<string, number>; interrupted?: boolean;
+};
+
+function StepBlocks({ steps, live = false }: { steps: StepLike[]; live?: boolean }) {
+  if (!steps.length) return null;
+  // DSH answer boundary: the last step without tool calls is the visible reply;
+  // earlier model calls (thinking + tools) are folded into the process area.
+  let answerIndex = -1;
+  for (let i = steps.length - 1; i >= 0; i--) {
+    if (!(steps[i].tools || []).length) { answerIndex = i; break; }
+  }
+  return (
+    <>
+      {steps.map((s, i) => {
+        const tools = s.tools || [];
+        const isAnswer = i === answerIndex && !!s.content;
+        const thinking = s.thinking
+          ? <details className={'thinking' + (live ? ' thinking-live' : '')}>
+              <summary>💭 思考过程 {s.durationMs != null ? `· ${fmtMs(s.durationMs)}` : ''}</summary>
+              <div className="thinking-body">{s.thinking}</div>
+            </details>
+          : null;
+        const toolRows = tools.map((t: any, j: number) => (
+          <div key={j} className={'step-tool' + (t.error ? ' is-error' : '')}>
+            <span className="step-tool-name">⚙ {t.name}</span>
+            {t.args ? <span className="step-tool-args">{argPreview(typeof t.args === 'string' ? t.args : '')}</span> : null}
+            {t.result ? <span className="step-tool-result">→ {resultPreview(typeof t.result === 'string' ? t.result : '')}</span> : null}
+            {t.done === false ? <span className="tool-running">运行中…</span> : null}
+          </div>
+        ));
+        const tokens = s.usage && Object.keys(s.usage).length
+          ? <span className="step-tokens">
+              {s.usage.inputTokens != null ? `↑${s.usage.inputTokens} ` : ''}
+              {s.usage.outputTokens != null ? `↓${s.usage.outputTokens} ` : ''}
+              {s.usage.reasoningTokens != null ? `💭${s.usage.reasoningTokens}` : ''}
+            </span>
+          : null;
+        if (isAnswer) {
+          return (
+            <div key={i} className="bubble">
+              {thinking}
+              {toolRows.length ? <div className="step-tools">{toolRows}</div> : null}
+              <div className="md" dangerouslySetInnerHTML={{ __html: renderMarkdown(s.content) }} />
+              {live && <span className="cursor" />}
+              {tokens}
+            </div>
+          );
+        }
+        if (!s.thinking && !tools.length && !s.content) return null;
+        return (
+          <details key={i} className="step-process" open={live}>
+            <summary>
+              第 {s.stepNo} 步 · {tools.length ? `${tools.length} 次工具调用` : '思考'}
+              {s.durationMs != null ? ` · ${fmtMs(s.durationMs)}` : ''}
+              {s.status === 'interrupted' ? ' · 已中断' : ''}
+              {tokens}
+            </summary>
+            <div className="step-process-body">
+              {thinking}
+              {toolRows.length ? <div className="step-tools">{toolRows}</div> : null}
+              {s.content ? <div className="md" dangerouslySetInnerHTML={{ __html: renderMarkdown(s.content) }} /> : null}
+            </div>
+          </details>
+        );
+      })}
+    </>
+  );
+}
+
 function ChatView({
   session, agents, onPermissionChange, onTitle,
 }: {
@@ -80,7 +152,7 @@ function ChatView({
   onTitle?: (title: string) => void;
 }) {
   const chat = useChatState(session.id);
-  const { messages, stream, busy } = chat;
+  const { messages, stream, busy, liveSteps, runtimeEvents } = chat;
   const [text, setText] = useState('');
   const [mode, setMode] = useState(session.permissionMode);
   const endRef = useRef<HTMLDivElement>(null);
@@ -116,7 +188,8 @@ function ChatView({
       const el = areaRef.current;
       if (el) setShowJump(el.scrollHeight - el.scrollTop - el.clientHeight > 200);
     }
-  }, [stream?.content, stream?.thinking, stream?.phase]);
+  }, [stream?.content, stream?.thinking, stream?.phase, liveSteps.length,
+      liveSteps.map(s => s.content.length + s.thinking.length).join('|')]);
 
   async function send() {
     if (!text.trim() || busy) return;
@@ -150,34 +223,46 @@ function ChatView({
         {messages.map((m, i) => (
           <div key={i} className={`msg ${m.role === 'user' ? 'user' : ''}`}>
             <div className="avatar">{m.role === 'user' ? '我' : 'AI'}</div>
-            <div className="bubble">
-              {m.role === 'user'
-                ? m.content
-                : <div className="md" dangerouslySetInnerHTML={{ __html: renderMarkdown(m.content) }} />}
-            </div>
+            {m.role === 'user' ? (
+              <div className="bubble">{m.content}</div>
+            ) : m.steps && m.steps.length ? (
+              <StepBlocks steps={m.steps} />
+            ) : (
+              <div className="bubble">
+                <div className="md" dangerouslySetInnerHTML={{ __html: renderMarkdown(m.content) }} />
+              </div>
+            )}
           </div>
+        ))}
+        {runtimeEvents.filter(e => e.type === 'REQUEST_STOP' || e.type === 'EXCEED_MAX_ITERS'
+          || e.type === 'ALL_TOOLS_DENIED' || e.type === 'SUBAGENT_EXPOSED').map((e, i) => (
+          <div key={i} className="runtime-event">ⓘ {e.type}{e.summary ? ` · ${e.summary}` : ''}</div>
         ))}
         {stream && (
           <div className="msg">
             <div className="avatar">AI</div>
-            <div className="bubble streaming">
-              {stream.thinking && (
-                <details className="thinking" open>
-                  <summary>💭 思考过程</summary>
-                  <div className="thinking-body">{stream.thinking}</div>
-                </details>
-              )}
-              {stream.phase === 'tool' && (
-                <div className="stream-status">⚙ 正在调用工具 {stream.tool}…</div>
-              )}
-              {stream.phase === 'thinking' && !stream.content && !stream.thinking && (
-                <div className="stream-status">思考中…</div>
-              )}
-              {stream.content
-                ? <div className="md" dangerouslySetInnerHTML={{ __html: renderMarkdown(stream.content) }} />
-                : null}
-              <span className="cursor" />
-            </div>
+            {liveSteps.length ? (
+              <StepBlocks steps={liveSteps} live />
+            ) : (
+              <div className="bubble streaming">
+                {stream.thinking && (
+                  <details className="thinking" open>
+                    <summary>💭 思考过程</summary>
+                    <div className="thinking-body">{stream.thinking}</div>
+                  </details>
+                )}
+                {stream.phase === 'tool' && (
+                  <div className="stream-status">⚙ 正在调用工具 {stream.tool}…</div>
+                )}
+                {stream.phase === 'thinking' && !stream.content && !stream.thinking && (
+                  <div className="stream-status">思考中…</div>
+                )}
+                {stream.content
+                  ? <div className="md" dangerouslySetInnerHTML={{ __html: renderMarkdown(stream.content) }} />
+                  : null}
+                <span className="cursor" />
+              </div>
+            )}
           </div>
         )}
         <div ref={endRef} />
@@ -209,14 +294,19 @@ function ChatView({
 interface ToolRec { name: string; args: string; result: string; startedAt: number; durationMs?: number; error: boolean; done?: boolean }
 
 interface TrajRow {
-  kind: 'user' | 'message' | 'tool';
+  kind: 'user' | 'message' | 'tool' | 'context' | 'compacted' | 'system' | 'subtool';
   turn: number;
+  stepNo?: number;
   text: string;            // single-line summary
   detail: string;          // full content for the inspector
-  result?: string;         // tool result preview (inline second column)
+  thinking?: string;       // reasoning of this model call
+  result?: string;         // tool result (inline second column)
   rec?: ToolRec;           // tool record for inspector tabs
   createdAt: string;
-  durationMs?: number;     // assistant turn duration
+  startedAt?: number;
+  durationMs?: number;
+  status?: string;
+  meta?: any;
   live?: boolean;          // in-flight row (not yet persisted)
 }
 
@@ -299,31 +389,51 @@ function TrajectoryView({ sessionId }: { sessionId: string }) {
 
   if (!data) return <div className="traj"><div className="traj-loading">加载轨迹中…</div></div>;
 
-  // Build DSH-style rows: turn → (user | assistant message | tool calls),
-  // then append the in-flight turn from the shared chat store (live SSE state).
+  // The backend projects rows from per-model-call steps + raw events (1:1 ledger).
+  // Fall back to message-based projection only for sessions persisted before steps existed.
   const rows: TrajRow[] = [];
   let turn = 0;
-  for (const m of data.messages as any[]) {
-    if (m.role === 'user') {
-      turn++;
-      rows.push({ kind: 'user', turn, text: plainText(m.content) || '(空)', detail: m.content || '', createdAt: m.createdAt });
-      continue;
-    }
-    rows.push({ kind: 'message', turn, text: plainText(m.content) || '(无文本回复)', detail: m.content || '', createdAt: m.createdAt });
-    let tools: ToolRec[] = [];
-    try {
-      const tc = typeof m.toolCalls === 'string' && m.toolCalls ? JSON.parse(m.toolCalls) : null;
-      if (tc?.tools) tools = tc.tools;
-    } catch { /* legacy comma format */ }
-    for (const t of tools) {
+  if (Array.isArray(data.rows) && data.rows.length) {
+    for (const r of data.rows as any[]) {
+      const tool = r.kind === 'tool' || r.kind === 'subtool';
       rows.push({
-        kind: 'tool', turn,
-        text: t.name + (argPreview(t.args) ? ' ' + argPreview(t.args) : ''),
-        detail: t.name + (t.args ? '\n\n' + prettyJson(t.args) : ''),
-        result: resultPreview(t.result) || undefined,
-        rec: t, createdAt: m.createdAt,
-        durationMs: t.durationMs,
+        kind: r.kind, turn: r.turn || 0, stepNo: r.stepNo || 0,
+        text: tool ? (r.text + (argPreview(r.detail) ? ' ' + argPreview(r.detail) : '')) : (r.text || ''),
+        detail: tool ? (r.text + (r.detail ? '\n\n' + prettyJson(r.detail) : '')) : (r.detail || ''),
+        thinking: r.thinking || '',
+        result: tool ? (resultPreview(r.result) || undefined) : undefined,
+        rec: tool ? {
+          name: r.text, args: r.detail || '', result: r.result || '',
+          startedAt: Number(r.startedAt) || 0, durationMs: r.durationMs,
+          error: r.status === 'failed', done: r.status !== 'running',
+        } : undefined,
+        createdAt: r.createdAt || '', startedAt: Number(r.startedAt) || 0,
+        durationMs: r.durationMs ?? undefined, status: r.status || '', meta: r.meta,
       });
+    }
+    turn = Math.max(0, ...rows.map(r => r.turn));
+  } else {
+    for (const m of data.messages as any[]) {
+      if (m.role === 'user') {
+        turn++;
+        rows.push({ kind: 'user', turn, text: plainText(m.content) || '(空)', detail: m.content || '', createdAt: m.createdAt });
+        continue;
+      }
+      rows.push({ kind: 'message', turn, text: plainText(m.content) || '(无文本回复)', detail: m.content || '', createdAt: m.createdAt });
+      let tools: ToolRec[] = [];
+      try {
+        const tc = typeof m.toolCalls === 'string' && m.toolCalls ? JSON.parse(m.toolCalls) : null;
+        if (tc?.tools) tools = tc.tools;
+      } catch { /* legacy comma format */ }
+      for (const t of tools) {
+        rows.push({
+          kind: 'tool', turn,
+          text: t.name + (argPreview(t.args) ? ' ' + argPreview(t.args) : ''),
+          detail: t.name + (t.args ? '\n\n' + prettyJson(t.args) : ''),
+          result: resultPreview(t.result) || undefined,
+          rec: t, createdAt: m.createdAt, durationMs: t.durationMs,
+        });
+      }
     }
   }
 
@@ -345,35 +455,62 @@ function TrajectoryView({ sessionId }: { sessionId: string }) {
         text: plainText(pendingUser.content) || '(空)', detail: pendingUser.content || '',
         createdAt: '', live: true });
     }
+    // One row per in-flight model call, so thinking → tool → thinking → reply
+    // is visible in the ledger while the turn is running.
+    for (const s of chat.liveSteps) {
+      rows.push({ kind: 'message', turn: liveTurn, stepNo: s.stepNo,
+        text: plainText(s.content) || (s.thinking ? '💭 正在思考…' : (s.tools.length ? '⚙ 工具调用中…' : '执行中…')),
+        detail: s.content || '', thinking: s.thinking || '', createdAt: '',
+        startedAt: undefined, durationMs: s.durationMs, status: s.status, live: true });
+      for (const t of s.tools) {
+        rows.push({ kind: 'tool', turn: liveTurn, stepNo: s.stepNo,
+          text: t.name + (argPreview(t.args) ? ' ' + argPreview(t.args) : ''),
+          detail: t.name + (t.args ? '\n\n' + prettyJson(t.args) : ''),
+          result: resultPreview(t.result) || undefined,
+          rec: { name: t.name, args: t.args, result: t.result, startedAt: t.startedAt,
+                 durationMs: t.durationMs, error: t.error, done: t.done },
+          createdAt: '', durationMs: t.durationMs,
+          status: t.done ? (t.error ? 'failed' : 'complete') : 'running', live: true });
+      }
+    }
+    for (const e of chat.runtimeEvents) {
+      if (['REQUEST_STOP', 'EXCEED_MAX_ITERS', 'ALL_TOOLS_DENIED', 'SUBAGENT_EXPOSED'].includes(e.type)) {
+        rows.push({ kind: 'context', turn: liveTurn,
+          text: e.type + (e.summary ? ' · ' + e.summary : ''), detail: e.summary || '',
+          createdAt: '', status: 'complete', live: true });
+      }
+    }
     const st = chat.stream;
-    if (st) {
+    if (!chat.liveSteps.length && st) {
       rows.push({ kind: 'message', turn: liveTurn,
         text: plainText(st.content) || (st.thinking ? '💭 正在思考…' : '执行中…'),
         detail: (st.thinking ? '思考过程：\n' + st.thinking + '\n\n' : '') + (st.content || ''),
         createdAt: '', live: true });
-    } else if (pendingAssistant && !chat.busy) {
+    } else if (!chat.liveSteps.length && pendingAssistant && !chat.busy) {
       // Turn just finished: show its final text until /trajectory catches up.
       rows.push({ kind: 'message', turn: liveTurn,
         text: plainText(pendingAssistant.content) || '(无文本回复)',
         detail: pendingAssistant.content || '', createdAt: '', live: true });
     }
-    const liveTools: ToolRec[] = chat.busy
-      ? chat.tools.map(t => ({ name: t.name, args: t.args, result: t.result, startedAt: t.startedAt,
-          durationMs: t.durationMs, error: t.error, done: t.done }))
-      : (() => {
-          try {
-            const root = pendingAssistant?.toolCalls ? JSON.parse(pendingAssistant.toolCalls) : null;
-            return root?.tools || [];
-          } catch { return []; }
-        })();
-    for (const t of liveTools) {
-      rows.push({
-        kind: 'tool', turn: liveTurn,
-        text: t.name + (argPreview(t.args) ? ' ' + argPreview(t.args) : ''),
-        detail: t.name + (t.args ? '\n\n' + prettyJson(t.args) : ''),
-        result: resultPreview(t.result) || undefined,
-        rec: t, createdAt: '', durationMs: t.durationMs, live: true,
-      });
+    if (!chat.liveSteps.length) {
+      const liveTools: ToolRec[] = chat.busy
+        ? chat.tools.map(t => ({ name: t.name, args: t.args, result: t.result, startedAt: t.startedAt,
+            durationMs: t.durationMs, error: t.error, done: t.done }))
+        : (() => {
+            try {
+              const root = pendingAssistant?.toolCalls ? JSON.parse(pendingAssistant.toolCalls) : null;
+              return root?.tools || [];
+            } catch { return []; }
+          })();
+      for (const t of liveTools) {
+        rows.push({
+          kind: 'tool', turn: liveTurn,
+          text: t.name + (argPreview(t.args) ? ' ' + argPreview(t.args) : ''),
+          detail: t.name + (t.args ? '\n\n' + prettyJson(t.args) : ''),
+          result: resultPreview(t.result) || undefined,
+          rec: t, createdAt: '', durationMs: t.durationMs, live: true,
+        });
+      }
     }
   }
 
@@ -392,7 +529,10 @@ function TrajectoryView({ sessionId }: { sessionId: string }) {
   const totalMs = (data.durationMs as number) || 0;
   const sel = selected != null ? rows[selected] : null;
 
-  const kindLabel = { user: '用户', message: '助手', tool: '工具' } as const;
+  const kindLabel = {
+    user: '用户', message: '助手', tool: '工具', subtool: '子工具',
+    context: '事件', compacted: '压缩', system: '系统',
+  } as const;
   const renderRow = (r: TrajRow, i: number, asSummary = false) => (
     <tr key={asSummary ? `s${i}` : i}
         data-kind={asSummary ? 'summary' : r.kind}
@@ -410,6 +550,7 @@ function TrajectoryView({ sessionId }: { sessionId: string }) {
         <span className="turn-rail" />
         {r.turn > 0 && (i === 0 || rows[i - 1].turn !== r.turn) && <span className="turn-label">第 {r.turn} 轮</span>}
         {!asSummary && <span className={`kind-chip chip-${r.kind}`}>{kindLabel[r.kind]}</span>}
+        {!asSummary && r.kind === 'message' && r.stepNo ? <span className="step-tag">第 {r.stepNo} 步</span> : null}
       </td>
       <td className="traj-content">
         {asSummary
@@ -421,7 +562,12 @@ function TrajectoryView({ sessionId }: { sessionId: string }) {
                 {r.rec?.error && <span className="tool-state is-error">失败</span>}
                 {r.live && r.rec && r.rec.done === false && <span className="tool-running">运行中…</span>}
               </span>
-            : <span className="content-text">{r.text.slice(0, 240)}</span>}
+            : <span className="content-text">
+                {r.thinking && !r.text.startsWith('💭') && <span className="thinking-dot" title="本步包含思考过程">💭 </span>}
+                {r.text.slice(0, 240)}
+                {(r.status === 'interrupted' || r.status === 'max-iters' || r.status === 'denied')
+                  && <span className="tool-state is-error">{r.status}</span>}
+              </span>}
       </td>
     </tr>
   );
@@ -494,12 +640,30 @@ function TrajectoryView({ sessionId }: { sessionId: string }) {
                 </>
               ) : (
                 <>
-                  <div className="details-tab">{sel.kind === 'user' ? '用户消息' : '助手回复'}</div>
+                  <div className="details-tab">{sel.kind === 'user' ? '用户消息' : sel.kind === 'context' ? '运行时事件' : '助手回复'}</div>
                   {sel.durationMs != null && <div className="details-duration">耗时 {fmtMs(sel.durationMs)}</div>}
+                  {sel.thinking && (
+                    <>
+                      <div className="details-tab">思考过程（本次模型调用）</div>
+                      <details className="thinking" open>
+                        <summary>💭 展开完整思考</summary>
+                        <div className="thinking-body">{sel.thinking}</div>
+                      </details>
+                    </>
+                  )}
                   {sel.kind === 'message' && !detailRaw ? (
                     <div className="md" dangerouslySetInnerHTML={{ __html: renderMarkdown(sel.detail || '') }} />
                   ) : (
                     <pre className="payload">{sel.detail || '(空)'}</pre>
+                  )}
+                  {sel.meta?.usage && Object.keys(sel.meta.usage).length > 0 && (
+                    <>
+                      <div className="details-tab">Token 用量</div>
+                      <dl className="kv">
+                        {Object.entries(sel.meta.usage).map(([k, v]) =>
+                          <React.Fragment key={k}><dt>{k}</dt><dd className="mono">{String(v)}</dd></React.Fragment>)}
+                      </dl>
+                    </>
                   )}
                 </>
               )}

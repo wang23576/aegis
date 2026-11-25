@@ -214,6 +214,31 @@ input, textarea, select { font-family: inherit; }
   overflow-wrap: anywhere; max-height: 320px; overflow-y: auto; }
 .payload.error-payload { background: #fdf0ef; color: #d93025; }
 
+/* Per-model-call steps (DSH step model) */
+.step-process { margin: 6px 0; border: 1px solid #e5e8f0; border-radius: 8px; background: #fafbfe; padding: 6px 10px; }
+.step-process > summary { cursor: pointer; font-size: 12px; color: #5b6478; list-style: none; }
+.step-process > summary::-webkit-details-marker { display: none; }
+.step-process > summary::before { content: '▸ '; color: #818cf8; }
+.step-process[open] > summary::before { content: '▾ '; }
+.step-process-body { margin-top: 8px; border-left: 2px solid #e0e7ff; padding-left: 10px; }
+.step-tools { display: flex; flex-direction: column; gap: 5px; margin: 6px 0 10px; }
+.step-tool { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px; font-size: 12px;
+  color: #4b5563; background: #fff; border: 1px solid #edf0f5; border-radius: 6px; padding: 5px 8px; }
+.step-tool.is-error { border-color: #fecaca; background: #fff7f6; }
+.step-tool-name { font-weight: 600; color: #3730a3; }
+.step-tool-args { font-family: Menlo, Consolas, monospace; color: #6b7280; }
+.step-tool-result { color: #137333; }
+.step-tool.is-error .step-tool-result { color: #d93025; }
+.step-tokens { margin-left: 8px; font-size: 10px; color: #9aa1b1; }
+.step-tag { margin-left: 5px; font-size: 10px; color: #818cf8; }
+.thinking-dot { color: #6366f1; }
+.runtime-event { margin: 8px 0; padding: 6px 10px; border-radius: 6px; background: #fff7ed;
+  color: #9a3412; font-size: 12px; }
+.chip-context { background: #fef3c7; color: #92400e; }
+.chip-compacted, .chip-system { background: #ede9fe; color: #5b21b6; }
+.chip-subtool { background: #e0f2fe; color: #075985; }
+.thinking-live > summary { color: #4f46e5; }
+
 /* Admin */
 .admin { flex: 1; overflow-y: auto; padding: 28px; }
 .admin h2 { font-size: 18px; margin-bottom: 16px; }
