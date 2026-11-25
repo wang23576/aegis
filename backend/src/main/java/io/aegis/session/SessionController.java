@@ -21,10 +21,15 @@ public class SessionController {
 
     private final SessionService sessions;
     private final AgentRepository agents;
+    private final TitleService titles;
+    private final SessionLogExporter exporter;
 
-    public SessionController(SessionService sessions, AgentRepository agents) {
+    public SessionController(SessionService sessions, AgentRepository agents,
+                             TitleService titles, SessionLogExporter exporter) {
         this.sessions = sessions;
         this.agents = agents;
+        this.titles = titles;
+        this.exporter = exporter;
     }
 
     private Long uid() { return AuthContext.get().id; }
@@ -78,6 +83,7 @@ public class SessionController {
         if (text == null || text.isBlank()) {
             return ResponseEntity.badRequest().body(Map.of("error", "message required"));
         }
+        boolean firstTurn = sessions.messages(id).stream().noneMatch(m -> "user".equals(m.role()));
         sessions.saveMessage(id, "user", text, null);
         SessionService.ChatResult result;
         try {
@@ -88,6 +94,7 @@ public class SessionController {
             return ResponseEntity.ok(Map.of("reply", reply, "error", true));
         }
         sessions.saveMessage(id, "assistant", result.reply(), result.toolCallsJson());
+        if (firstTurn) titles.generateFor(id);
         return ResponseEntity.ok(Map.of("reply", result.reply(), "toolCalls", result.toolCalls()));
     }
 
@@ -112,6 +119,7 @@ public class SessionController {
         response.setHeader("X-Accel-Buffering", "no");
         PrintWriter writer = response.getWriter();
         ObjectMapper mapper = new ObjectMapper();
+        boolean firstTurn = sessions.messages(id).stream().noneMatch(m -> "user".equals(m.role()));
         sessions.saveMessage(id, "user", text, null);
         try {
             SessionService.ChatResult result = sessions.chat(s, uid(), text, new SessionService.ChatStreamListener() {
@@ -126,8 +134,12 @@ public class SessionController {
                 }
             });
             sessions.saveMessage(id, "assistant", result.reply(), result.toolCallsJson());
+            if (firstTurn) titles.generateFor(id);
+            // Re-read so the freshly generated title reaches the client in done.
+            String title = sessions.get(id, uid()).map(SessionService.Session::title).orElse(null);
             sendEvent(writer, mapper, "done",
-                    Map.of("reply", result.reply(), "toolCalls", result.toolCalls()));
+                    Map.of("reply", result.reply(), "toolCalls", result.toolCalls(),
+                            "title", title == null ? "" : title));
         } catch (Exception e) {
             String err = "[Error] " + e.getClass().getSimpleName() + ": " + e.getMessage();
             sessions.saveMessage(id, "assistant", err, null);
@@ -148,5 +160,20 @@ public class SessionController {
     public ResponseEntity<?> trajectory(@PathVariable String id) {
         sessions.get(id, uid()).orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND));
         return ResponseEntity.ok(sessions.trajectory(id));
+    }
+
+    /**
+     * Downloads the session log archive (DSH-style export): meta.json + session.jsonl +
+     * trajectory.json inside one zip. Content-Disposition forces the browser save dialog.
+     */
+    @GetMapping("/{id}/export")
+    public void export(@PathVariable String id, HttpServletResponse response) throws IOException {
+        sessions.get(id, uid()).orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND));
+        response.setContentType("application/zip");
+        response.setHeader("Content-Disposition",
+                "attachment; filename=\"" + SessionLogExporter.zipFilename(id) + "\"");
+        try (java.util.zip.ZipOutputStream zip = new java.util.zip.ZipOutputStream(response.getOutputStream())) {
+            exporter.export(id, zip);
+        }
     }
 }

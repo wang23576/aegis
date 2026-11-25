@@ -106,8 +106,8 @@ export const api = {
   async chatStream(
     id: string,
     message: string,
-    handlers: { onDelta: (t: string) => void; onThinking?: (t: string) => void; onTool?: (name: string) => void },
-  ): Promise<{ reply: string; toolCalls: string[] }> {
+    handlers: { onDelta: (t: string) => void; onThinking?: (t: string) => void;     onTool?: (name: string) => void },
+  ): Promise<{ reply: string; toolCalls: string[]; title?: string }> {
     const token = getToken();
     const res = await fetch(`/api/sessions/${id}/chat/stream`, {
       method: 'POST',
@@ -122,7 +122,7 @@ export const api = {
     const reader = res.body.getReader();
     const decoder = new TextDecoder('utf-8');
     let buffer = '';
-    let final = { reply: '', toolCalls: [] as string[] };
+    let final = { reply: '', toolCalls: [] as string[], title: '' };
     for (;;) {
       const { done, value } = await reader.read();
       if (done) break;
@@ -143,7 +143,7 @@ export const api = {
         if (event === 'delta') handlers.onDelta(payload.text);
         else if (event === 'thinking') handlers.onThinking?.(payload.text);
         else if (event === 'tool') handlers.onTool?.(payload.name);
-        else if (event === 'done') final = { reply: payload.reply ?? '', toolCalls: payload.toolCalls ?? [] };
+        else if (event === 'done') final = { reply: payload.reply ?? '', toolCalls: payload.toolCalls ?? [], title: payload.title ?? '' };
         else if (event === 'error') throw new Error(payload.message);
       }
     }
@@ -154,6 +154,30 @@ export const api = {
   },
   trajectory(id: string): Promise<any> {
     return request(`/api/sessions/${id}/trajectory`);
+  },
+
+  /** Downloads the session log archive (zip) via a hidden anchor so the browser saves it. */
+  async downloadSessionLog(id: string): Promise<void> {
+    const t = getToken();
+    const res = await fetch(`/api/sessions/${id}/export`, {
+      headers: t ? { Authorization: `Bearer ${t}` } : {},
+    });
+    if (!res.ok) {
+      let msg = `HTTP ${res.status}`;
+      try { msg = (await res.json()).error || msg; } catch { /* ignore */ }
+      throw new Error(msg);
+    }
+    const disposition = res.headers.get('Content-Disposition') || '';
+    const match = disposition.match(/filename="([^"]+)"/);
+    const blob = await res.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = match ? match[1] : `aegis-session-${id}.zip`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
   },
 
   listUsers(): Promise<any[]> {

@@ -57,6 +57,11 @@ public class AgentRegistry {
         return cache.computeIfAbsent(agentId, this::build);
     }
 
+    /** The shared chat model, reused by auxiliary services (e.g. session title generation). */
+    public io.agentscope.core.model.Model defaultModel() {
+        return defaultModel;
+    }
+
     private HarnessAgent build(String agentId) {
         Agent meta = agents.findById(agentId)
                 .orElseThrow(() -> new IllegalArgumentException("unknown agent: " + agentId));

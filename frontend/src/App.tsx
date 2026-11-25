@@ -70,11 +70,12 @@ function AgentChooser({ agents, onPick }: { agents: AgentInfo[]; onPick: (a: Age
 }
 
 function ChatView({
-  session, agents, onPermissionChange,
+  session, agents, onPermissionChange, onTitle,
 }: {
   session: SessionInfo;
   agents: AgentInfo[];
   onPermissionChange: (mode: string) => void;
+  onTitle?: (title: string) => void;
 }) {
   const [messages, setMessages] = useState<Message[]>([]);
   const [text, setText] = useState('');
@@ -133,6 +134,7 @@ function ChatView({
         onThinking: () => setStream(s => s && { ...s, phase: 'thinking' }),
         onTool: name => setStream(s => s && { ...s, tool: name, phase: 'tool' }),
       });
+      if (res.title) onTitle?.(res.title);
       setMessages(m => [...m, {
         role: 'assistant',
         content: res.reply || partialRef.current || '（无回复）',
@@ -516,6 +518,13 @@ function Workspace({ user, onLogout }: { user: CurrentUser; onLogout: () => void
 
   function openSession(s: SessionInfo) { setCurrent(s); setView('chat'); }
 
+  /** Refreshes one session's title in the sidebar (after LLM auto-titling). */
+  function refreshTitle(sessionId: string, title: string) {
+    if (!title) return;
+    setSessions(prev => prev.map(s => s.id === sessionId ? { ...s, title } : s));
+    setCurrent(c => c && c.id === sessionId ? { ...c, title } : c);
+  }
+
   return (
     <div className="app">
       <div className="sidebar">
@@ -551,12 +560,16 @@ function Workspace({ user, onLogout }: { user: CurrentUser; onLogout: () => void
                 <div className="tabs">
                   <button className={view === 'chat' ? 'active' : ''} onClick={() => setView('chat')}>对话</button>
                   <button className={view === 'trajectory' ? 'active' : ''} onClick={() => setView('trajectory')}>轨迹</button>
+                  <button
+                    title="下载会话日志（zip：对话 JSONL + 轨迹 + 元数据）"
+                    onClick={() => api.downloadSessionLog(current.id)}
+                  >⬇ 日志</button>
                 </div>
               )}
             </div>
             {showChooser || !current ? <AgentChooser agents={agents} onPick={pickAgent} /> : (
               view === 'chat'
-                ? <ChatView session={current} agents={agents} onPermissionChange={m => setCurrent({ ...current, permissionMode: m })} />
+                ? <ChatView session={current} agents={agents} onPermissionChange={m => setCurrent({ ...current, permissionMode: m })} onTitle={t => refreshTitle(current.id, t)} />
                 : <TrajectoryView sessionId={current.id} />
             )}
           </>
