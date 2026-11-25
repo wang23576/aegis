@@ -225,11 +225,15 @@ function ChatView({
             <div className="avatar">{m.role === 'user' ? '我' : 'AI'}</div>
             {m.role === 'user' ? (
               <div className="bubble">{m.content}</div>
-            ) : m.steps && m.steps.length ? (
-              <StepBlocks steps={m.steps} />
             ) : (
-              <div className="bubble">
-                <div className="md" dangerouslySetInnerHTML={{ __html: renderMarkdown(m.content) }} />
+              <div className="msg-body">
+                {m.steps && m.steps.length ? (
+                  <StepBlocks steps={m.steps} />
+                ) : (
+                  <div className="bubble">
+                    <div className="md" dangerouslySetInnerHTML={{ __html: renderMarkdown(m.content) }} />
+                  </div>
+                )}
               </div>
             )}
           </div>
@@ -241,6 +245,7 @@ function ChatView({
         {stream && (
           <div className="msg">
             <div className="avatar">AI</div>
+            <div className="msg-body">
             {liveSteps.length ? (
               <StepBlocks steps={liveSteps} live />
             ) : (
@@ -263,6 +268,7 @@ function ChatView({
                 <span className="cursor" />
               </div>
             )}
+            </div>
           </div>
         )}
         <div ref={endRef} />
@@ -322,7 +328,9 @@ function plainText(md: string | undefined, max = 240): string {
   return md
     .replace(/```[\s\S]*?```/g, m => m.replace(/```[^\n]*\n?/g, ' ').replace(/```/g, ' '))
     .replace(/^#{1,6}\s+/gm, '')
-    .replace(/\*\*|__|`|\*|_/g, '')
+    .replace(/`([^`]+)`/g, '$1').replace(/`/g, '')
+    .replace(/\*\*([^*]+)\*\*/g, '$1').replace(/__([^_]+)__/g, '$1')
+    .replace(/(^|[^*])\*([^*\n]+)\*/g, '$1$2')
     .replace(/!?\[([^\]]*)\]\([^)]*\)/g, '$1')
     .replace(/^\s*\|?[\s:|-]+\|?\s*$/gm, '')   // table separator row |---|---|
     .replace(/\|/g, ' ')                        // table cell separators
@@ -398,7 +406,7 @@ function TrajectoryView({ sessionId }: { sessionId: string }) {
       const tool = r.kind === 'tool' || r.kind === 'subtool';
       rows.push({
         kind: r.kind, turn: r.turn || 0, stepNo: r.stepNo || 0,
-        text: tool ? (r.text + (argPreview(r.detail) ? ' ' + argPreview(r.detail) : '')) : (r.text || ''),
+        text: tool ? (r.text + (argPreview(r.detail) ? ' ' + argPreview(r.detail) : '')) : plainText(r.text || ''),
         detail: tool ? (r.text + (r.detail ? '\n\n' + prettyJson(r.detail) : '')) : (r.detail || ''),
         thinking: r.thinking || '',
         result: tool ? (resultPreview(r.result) || undefined) : undefined,

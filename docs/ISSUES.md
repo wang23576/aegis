@@ -243,3 +243,19 @@
 - 复测：
   - API：SSE 实测 `step_start×3 → thinking×601 → tool_start×3 → tool_end×3 → step_end×3 → done`；轨迹 rows = user×1 + message×3 + tool×3 + context×13，原始事件 901 条覆盖 21 种事件类型；zip 含 5 个文件（meta/session.jsonl/steps.json/events.jsonl/trajectory.json）
   - Playwright：聊天区 2 个折叠过程步骤 + 1 个最终气泡、3 条工具行；轨迹 3 个"第 N 步"标签、3 条工具行、13 条事件行，详情可展开完整思考
+
+---
+
+### ISSUE-020  步骤化改造后对话布局挤成竖条 + 轨迹摘要丢失工具名下划线
+- 发现时间：2026-11-25（Alan 截图反馈："这不对吧，改好后，对话和轨迹你要测试一下呀"）
+- 根因：
+  1. `StepBlocks` 返回多个并列元素（若干 `details.step-process` + 最终 `div.bubble`），而父容器 `.msg` 是 `display:flex`，这些元素被当成同一行的 flex 项横向排列，步骤块被挤到约 100px 宽、文字竖排
+  2. `plainText()` 为去 Markdown 强调符号无条件删除 `_`，把 `list_files`、`action_observation`、`tool_call_id` 等标识符里的下划线也删掉了，导致轨迹摘要失真
+- 修复：
+  - 助手消息（含流式）整体包入 `.msg-body`（纵向 flex、min-width:0、gap:6px），步骤块与最终气泡按 DSH 风格上下堆叠、整宽显示；用户气泡保持原样
+  - `plainText()` 改为只剥离成对的代码/强调标记（`` `x` ``、`**x**`、`__x__`、单个 `*x*`），保留标识符中的下划线；行内摘要无 Markdown 源码、工具/事件名保持原样
+- 复测（Playwright 截图 + DOM 断言）：
+  - 运行中：2 个步骤块 + 1 个流式气泡，`.msg-body` 与 `.step-process` 宽度均 776px，无窄竖条（tmp/chat_live.png）
+  - 完成后：流式光标归零、最终回答整宽显示（tmp/chat_live_done.png）
+  - 轨迹：15 行 = 用户×1 + 助手步骤×3 + 工具×2 + 事件×9；用户行保留 `list_files`、事件行保留 `action_observation`/`tool_call_id`，无反引号等 Markdown 残留（tmp/traj_after.png）
+  - 注意：发送按钮在输入框为空时也会禁用，验证"运行中"应看按钮文案"回复中…/发送"，不能只看 disabled
