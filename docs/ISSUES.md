@@ -297,3 +297,16 @@
 - 机制：`agentscope-harness` 的 `WebTools$WebSearchTool` 直接读环境变量：`ANYSEARCH_API_KEY` / `ANYSEARCH_BASE_URL`（默认 `https://api.anysearch.com/v1/search`）优先，未设置则回退 `TAVILY_API_KEY`；两者都没有时返回 "Neither ANYSEARCH_API_KEY nor TAVILY_API_KEY is set"
 - 配置：Aegis 已在 `docker/model.env`（env_file，gitignored）写入与 paw `.env` 相同的 AnySearch key/base-url；`docker/model.env.example` 增加对应模板；README 快速开始补充说明。智能体 `tools.json` 原本已包含 web_search 白名单，无需改动
 - 复测：API 实测触发 `tool_start(web_search)`，轨迹工具结果返回 AnySearch 真实搜索数据（AgentScope Java 2.0 等），助手回复正确引用第一条标题；容器日志无错误
+
+---
+
+### ISSUE-023  内部事件中文标签 + context_build 压缩 token 摘要
+- 发现时间：2026-11-25（Alan：内部事件加中文描述方便看懂但保留原始内容；context_build 有压缩时体现压缩前后 token）
+- 根因：轨迹里 CUSTOM `action_observation` / `context_build` 虽然已归入内部事件，但展示时只有英文事件名 + JSON 前缀，人眼难以快速判断是什么；压缩只藏在 manifest 的 `__compaction_summary__` 与 `transforms:history_compaction` 里，默认完全不可见
+- 修复：
+  - `SessionService.internalEventLabel()` 为内部事件生成中文前缀：`工具动作观测 · read_file（开始/返回）`、`上下文构建 · 约 19.0k token`、`上下文压缩 · 约 46.5k → 约 25.4k token`、`工具权限确认（自动批准）`、`工具确认结果（自动批准）` 等；**原始 data 完整附在标签之后并保留在 detail 字段**，AI 回放/原始审计不受影响
+  - 压缩前 token 取同 turn 内前一条 context_build 的 `estimatedInputTokens`；`events()` 按全局 seq 排序但 seq 每 turn 重置，直接用全局前条会跨 turn 串值，故按 (turnNo, seq) 建映射修正
+- 复测（session 6d8b3786-f0a1-439f-bd30-16a913732cb1，23331 条事件）：
+  - 标签前缀去重：工具动作观测 / 上下文构建 / 上下文压缩 / 工具权限确认（自动批准）/ 工具确认结果（自动批准）
+  - 两条压缩：`约 46.5k → 约 25.4k token`、`约 57.5k → 约 30.3k token`，与数据库 manifest 的 46483→25438、57509→30261 一致
+  - 127 条内部事件的 detail 均保留完整原始 payload

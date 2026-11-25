@@ -673,6 +673,28 @@ public class SessionService {
         Set<String> contextTypes = Set.of("REQUEST_STOP", "EXCEED_MAX_ITERS", "ALL_TOOLS_DENIED",
                 "SUBAGENT_EXPOSED", "CUSTOM", "HINT_BLOCK", "USER_CONFIRM_RESULT",
                 "EXTERNAL_EXECUTION_RESULT", "REQUIRE_EXTERNAL_EXECUTION");
+        // "Tokens before compaction" is approximated by the preceding context_build in the
+        // SAME turn. events() is ordered by global seq, but seq restarts per turn, so a plain
+        // running "previous" would pick up a different turn's value. The harness journal's
+        // compaction/end carries the exact number but is not exposed via streamEvents().
+        Map<String, Integer> prevTokensByEvent = new HashMap<>();
+        Map<Integer, List<int[]>> tokensByTurn = new HashMap<>(); // turn -> [{seq, tokens}]
+        for (Map<String, Object> e : events) {
+            if (!"CUSTOM".equals(String.valueOf(e.getOrDefault("eventType", "")))) continue;
+            String d = String.valueOf(e.getOrDefault("data", ""));
+            if (!d.startsWith("context_build")) continue;
+            int t = Integer.parseInt(String.valueOf(e.getOrDefault("turnNo", "0")));
+            int s = Integer.parseInt(String.valueOf(e.getOrDefault("seq", "0")));
+            int tok = estimatedTokens(d, mapper);
+            if (tok >= 0) tokensByTurn.computeIfAbsent(t, k -> new ArrayList<>()).add(new int[]{s, tok});
+        }
+        for (Map.Entry<Integer, List<int[]>> entry : tokensByTurn.entrySet()) {
+            List<int[]> list = entry.getValue();
+            list.sort(Comparator.comparingInt(a -> a[0]));
+            for (int i = 1; i < list.size(); i++) {
+                prevTokensByEvent.put(entry.getKey() + ":" + list.get(i)[0], list.get(i - 1)[1]);
+            }
+        }
         for (Map<String, Object> e : events) {
             String type = String.valueOf(e.getOrDefault("eventType", ""));
             if (!contextTypes.contains(type)) continue;
@@ -682,16 +704,14 @@ public class SessionService {
                 if (cs[0] <= seq) { cTurn = cs[2]; cStep = cs[1]; cOrder = cs[1] * 10 + 5; }
             }
             String data = String.valueOf(e.getOrDefault("data", ""));
-            // Permission gates are internal control flow, not user-visible events.
-            // Give them a readable label but keep the raw type in meta / events.jsonl.
-            String label = type;
-            if ("REQUEST_STOP".equals(type) && data.toLowerCase().contains("permission")) {
-                label = "工具权限确认（自动批准）";
-            } else if ("USER_CONFIRM_RESULT".equals(type)) {
-                label = "工具确认结果（自动批准）";
-            }
+            // Human-readable Chinese prefix for internal harness events. The raw payload is
+            // still appended after the label (and kept verbatim in the detail field), so the
+            // original event remains intact for AI/debugging — only the label aids readability.
+            int prevTokens = prevTokensByEvent.getOrDefault(
+                    e.getOrDefault("turnNo", "0") + ":" + seq, -1);
+            String label = internalEventLabel(type, data, prevTokens, mapper);
             rows.add(row("context", cTurn, cStep, cOrder,
-                    label + (data.isEmpty() ? "" : (label.equals(type) ? " · " : " · ") + preview(data, 120)),
+                    label + (data.isEmpty() ? "" : " · " + preview(data, 120)),
                     data, "", String.valueOf(e.getOrDefault("createdAt", "")), null, null, "complete"));
             Map<String, Object> meta = new LinkedHashMap<>();
             meta.put("seq", e.get("seq")); meta.put("eventType", type);
@@ -740,6 +760,82 @@ public class SessionService {
             }
         } catch (Exception ignored) { /* not JSON */ }
         return List.of();
+    }
+
+    /**
+     * Human-readable Chinese label for internal harness events. Raw event data is never
+     * replaced — trajectory rows keep the full payload in `detail` and append a preview
+     * after this label, so the original evidence stays available for AI replay.
+     */
+    private static String internalEventLabel(String type, String data, int prevTokens, ObjectMapper mapper) {
+        String d = data == null ? "" : data;
+        if ("REQUEST_STOP".equals(type)) {
+            return d.toLowerCase().contains("permission") ? "工具权限确认（自动批准）" : "请求停止";
+        }
+        if ("USER_CONFIRM_RESULT".equals(type)) return "工具确认结果（自动批准）";
+        if ("REQUIRE_USER_CONFIRM".equals(type)) return "工具权限确认请求";
+        if ("EXCEED_MAX_ITERS".equals(type)) return "达到最大迭代次数";
+        if ("ALL_TOOLS_DENIED".equals(type)) return "工具调用被全部拒绝";
+        if ("SUBAGENT_EXPOSED".equals(type)) return "子智能体暴露";
+        if ("HINT_BLOCK".equals(type)) return "提示块";
+        if ("EXTERNAL_EXECUTION_RESULT".equals(type)) return "外部执行结果";
+        if ("REQUIRE_EXTERNAL_EXECUTION".equals(type)) return "外部执行请求";
+        if (!"CUSTOM".equals(type)) return type;
+
+        Map<String, Object> obj = parseEventJson(d, mapper);
+        if (obj == null) return type;
+        if (d.startsWith("action_observation")) {
+            String tool = String.valueOf(obj.getOrDefault("tool_name", ""));
+            String status = String.valueOf(obj.getOrDefault("status", ""));
+            String phase = "STARTED".equals(status) ? "开始" : "RETURNED".equals(status) ? "返回" : "";
+            return "工具动作观测" + (tool.isEmpty() || "null".equals(tool) ? "" : " · " + tool)
+                    + (phase.isEmpty() ? "" : "（" + phase + "）");
+        }
+        if (d.startsWith("context_build")) {
+            Map<String, Object> manifest = obj.get("context_manifest") instanceof Map<?, ?> m
+                    ? castMap(m) : Map.of();
+            int after = manifest.get("estimatedInputTokens") instanceof Number n ? n.intValue() : -1;
+            boolean compacted = manifest.get("transforms") instanceof List<?> ts
+                    && ts.stream().anyMatch(x -> String.valueOf(x).contains("history_compaction"));
+            if (compacted) {
+                String before = prevTokens >= 0 ? "约 " + fmtK(prevTokens) + " → " : "";
+                return "上下文压缩 · " + before + (after >= 0 ? "约 " + fmtK(after) : "?") + " token";
+            }
+            return "上下文构建" + (after >= 0 ? " · 约 " + fmtK(after) + " token" : "");
+        }
+        return type;
+    }
+
+    /** Extract the estimated input token count from a context_build payload, or -1 if absent. */
+    private static int estimatedTokens(String data, ObjectMapper mapper) {
+        Map<String, Object> obj = parseEventJson(data, mapper);
+        if (obj == null || !(obj.get("context_manifest") instanceof Map<?, ?> m)) return -1;
+        Object v = castMap(m).get("estimatedInputTokens");
+        return v instanceof Number n ? n.intValue() : -1;
+    }
+
+    /** Parse the JSON object that follows the event-name prefix, e.g. "context_build {...}". */
+    @SuppressWarnings("unchecked")
+    private static Map<String, Object> parseEventJson(String data, ObjectMapper mapper) {
+        int i = data.indexOf('{');
+        if (i < 0) return null;
+        try {
+            return mapper.readValue(data.substring(i), Map.class);
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    @SuppressWarnings("unchecked")
+    private static Map<String, Object> castMap(Map<?, ?> m) {
+        return (Map<String, Object>) m;
+    }
+
+    /** Compact token display matching the frontend's k-unit convention. */
+    private static String fmtK(int tokens) {
+        if (tokens < 1000) return String.valueOf(tokens);
+        double k = tokens / 1000.0;
+        return String.format(k >= 100 ? "%.0fk" : "%.1fk", k);
     }
 
     private static Map<String, Object> row(String kind, int turn, int stepNo, int order,
