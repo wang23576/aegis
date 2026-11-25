@@ -74,7 +74,7 @@ function AgentChooser({ agents, onPick }: { agents: AgentInfo[]; onPick: (a: Age
 /** One LLM invocation, rendered DSH-style: process steps fold, final answer stays visible. */
 type StepLike = {
   stepNo: number; thinking: string; content: string; tools: any[];
-  durationMs?: number; status?: string; usage?: Record<string, number>; interrupted?: boolean;
+  durationMs?: number; status?: string; usage?: Record<string, number> | string; interrupted?: boolean;
 };
 
 function StepBlocks({ steps, live = false }: { steps: StepLike[]; live?: boolean }) {
@@ -320,11 +320,19 @@ function fmtMs(ms: number): string {
   return ms + ' 毫秒';
 }
 
-/** DSH-style compact token count: one number, k for thousands. */
-function fmtTokens(usage: Record<string, number> | undefined): string {
-  if (!usage) return '';
-  const n = usage.totalTokens != null ? usage.totalTokens
-    : (usage.inputTokens || 0) + (usage.outputTokens || 0);
+/** DSH-style compact token count: one number, k for thousands.
+ *  Persisted steps carry usage as a JSON string (DB TEXT column) while live SSE steps
+ *  carry an object — accept both so history and trajectory show the same token total. */
+function fmtTokens(usage: Record<string, number> | string | undefined): string {
+  let u: Record<string, number> | undefined;
+  if (typeof usage === 'string') {
+    try { u = JSON.parse(usage); } catch { return ''; }
+  } else {
+    u = usage;
+  }
+  if (!u) return '';
+  const n = u.totalTokens != null ? u.totalTokens
+    : (u.inputTokens || 0) + (u.outputTokens || 0);
   if (!n) return '';
   return n >= 1000 ? (n / 1000).toFixed(n >= 10000 ? 0 : 1).replace(/\.0$/, '') + 'k' : String(n);
 }

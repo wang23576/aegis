@@ -35,7 +35,8 @@ export interface StepView {
   content: string;
   tools: any[];
   dataBlocks: string[];
-  usage: Record<string, number>;
+  /** Persisted steps hold a JSON string; live SSE steps hold an object. */
+  usage: Record<string, number> | string;
   startedAt: number;
   firstTokenAt?: number;
   endedAt?: number;

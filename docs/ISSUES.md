@@ -310,3 +310,35 @@
   - 标签前缀去重：工具动作观测 / 上下文构建 / 上下文压缩 / 工具权限确认（自动批准）/ 工具确认结果（自动批准）
   - 两条压缩：`约 46.5k → 约 25.4k token`、`约 57.5k → 约 30.3k token`，与数据库 manifest 的 46483→25438、57509→30261 一致
   - 127 条内部事件的 detail 均保留完整原始 payload
+
+---
+
+### ISSUE-024  历史会话/轨迹 token 总量不显示（usage 类型不一致）
+- 发现时间：2026-11-25（Alan：之前对话和轨迹里改过的 token 总量看不到了）
+- 根因：`chat_step.usage` 在 DB 中是 JSON **字符串**（TEXT 列），实时 SSE 时前端已 parse 成对象所以能看到；切页刷新走 `/messages` 历史加载和 `/trajectory` 时拿到的是字符串，`fmtTokens` 只接受对象 → 返回空
+- 修复：`fmtTokens` 兼容 `string | Record<string,number>` 两种形态（typeof 判断后 JSON.parse），类型声明同步放宽
+- 复测（session 6d8b3786）：历史 messages 与轨迹 steps 均恢复显示 9.5k / 9.7k / 10.5k…
+
+### 附注一：token 是怎么算的
+- `totalTokens` **不是框架算的**，是 agentscope-java 从模型 API 响应原样透传的：模型适配器（如 `OpenAIResponseParser.parseUsage`）把 API 返回的 `usage.prompt_tokens / completion_tokens / ...` 映射为 `ChatUsage`（inputTokens / outputTokens / cachedTokens / reasoningTokens / time）
+- `ChatUsage.getTotalTokens() = inputTokens + outputTokens`，框架侧只做加法；分词计数本身在模型服务商侧
+- Aegis 展示的就是这个值，明细（input/output/cached 等 8 个字段）保留在轨迹与导出的 steps.json 里
+
+### 附注二：agentscope-java 事件全量盘点（35 种）
+对照 `io.agentscope.core.event` 包，Aegis 捕获情况：
+| 分组 | 事件 | Aegis 状态 |
+|---|---|---|
+| 生命周期 | AgentStart/End/Result | ✅ 捕获 |
+| 模型调用 | ModelCallStart/End | ✅ 捕获（step 划分+usage） |
+| 文本 | TextBlock Start/Delta/End | ✅ Delta 实时，Start/End 归入内部统计 |
+| 思考 | ThinkingBlock Start/Delta/End | ✅ 同上 |
+| 数据块 | DataBlock Start/Delta/End | ✅ Delta 捕获（Start/End 无独立展示，实际业务未用到） |
+| 工具调用 | ToolCall Start/Delta/End | ✅ 捕获 |
+| 工具结果 | ToolResult Start/TextDelta/DataDelta/End | ✅ 捕获 |
+| 工具进度 | ToolProgress | ✅ 捕获 |
+| 权限/控制 | RequestStop / RequireUserConfirm / UserConfirmResult | ✅ 捕获（中文标签） |
+| 控制 | ExceedMaxIters / AllToolsDenied / RequireExternalExecution / ExternalExecutionResult | ✅ 捕获 |
+| 审计 | CustomEvent | ✅ 捕获（context_build / action_observation 等） |
+| 子代理 | SubagentExposed | ✅ 捕获 |
+| 提示块 | HintBlock | ✅ 捕获 |
+- 结论：事件类型**已全量覆盖**，无遗漏；Start/End 类事件仅用于配对统计，不需要单独的轨迹行
