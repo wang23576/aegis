@@ -141,6 +141,16 @@ public class SessionController {
         ObjectMapper mapper = new ObjectMapper();
         boolean firstTurn = sessions.messages(id).stream().noneMatch(m -> "user".equals(m.role()));
         sessions.saveMessage(id, "user", text, null);
+        // Title generation is an auxiliary LLM call. Run it concurrently with the
+        // chat so it never holds the SSE stream open after the answer is complete.
+        java.util.concurrent.CompletableFuture<String> titleFuture = null;
+        if (firstTurn) {
+            final Long userId = uid(); // AuthContext is thread-local; capture it here.
+            titleFuture = java.util.concurrent.CompletableFuture.supplyAsync(() -> {
+                titles.generateFor(id);
+                return sessions.get(id, userId).map(SessionService.Session::title).orElse(null);
+            });
+        }
         try {
             SessionService.ChatResult result = sessions.chat(s, uid(), text, new SessionService.ChatStreamListener() {
                 @Override public void onDelta(String d) {
@@ -181,9 +191,10 @@ public class SessionController {
                 }
             });
             sessions.saveMessage(id, "assistant", result.reply(), result.toolCallsJson());
-            if (firstTurn) titles.generateFor(id);
-            // Re-read so the freshly generated title reaches the client in done.
-            String title = sessions.get(id, uid()).map(SessionService.Session::title).orElse(null);
+            // Non-blocking: if the auxiliary title call already finished, include it
+            // in done; otherwise the sidebar picks it up on the next list refresh.
+            String title = titleFuture == null ? null : titleFuture.getNow(null);
+            if (title == null || title.isBlank()) title = titles.fallbackTitle(id);
             Map<String, Object> done = new LinkedHashMap<>();
             done.put("reply", result.reply());
             done.put("toolCalls", result.toolCalls());

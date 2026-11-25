@@ -682,16 +682,27 @@ public class SessionService {
                 if (cs[0] <= seq) { cTurn = cs[2]; cStep = cs[1]; cOrder = cs[1] * 10 + 5; }
             }
             String data = String.valueOf(e.getOrDefault("data", ""));
+            // Permission gates are internal control flow, not user-visible events.
+            // Give them a readable label but keep the raw type in meta / events.jsonl.
+            String label = type;
+            if ("REQUEST_STOP".equals(type) && data.toLowerCase().contains("permission")) {
+                label = "工具权限确认（自动批准）";
+            } else if ("USER_CONFIRM_RESULT".equals(type)) {
+                label = "工具确认结果（自动批准）";
+            }
             rows.add(row("context", cTurn, cStep, cOrder,
-                    type + (data.isEmpty() ? "" : " · " + preview(data, 120)),
+                    label + (data.isEmpty() ? "" : (label.equals(type) ? " · " : " · ") + preview(data, 120)),
                     data, "", String.valueOf(e.getOrDefault("createdAt", "")), null, null, "complete"));
             Map<String, Object> meta = new LinkedHashMap<>();
             meta.put("seq", e.get("seq")); meta.put("eventType", type);
-            // Harness bookkeeping events (tool observation / context build) are
-            // retained in the raw log but hidden from the main ledger by default.
+            // Harness bookkeeping events (tool observation / context build) and
+            // the auto-approval handshake are retained in the raw log but hidden
+            // from the main ledger by default.
             String dataText = data == null ? "" : data;
-            meta.put("internal", "CUSTOM".equals(type)
-                    && (dataText.startsWith("action_observation") || dataText.startsWith("context_build")));
+            meta.put("internal", ("CUSTOM".equals(type)
+                    && (dataText.startsWith("action_observation") || dataText.startsWith("context_build")))
+                    || ("REQUEST_STOP".equals(type) && dataText.toLowerCase().contains("permission"))
+                    || "USER_CONFIRM_RESULT".equals(type));
             rows.get(rows.size() - 1).put("meta", meta);
         }
         rows.sort(Comparator.comparingInt((Map<String, Object> r) -> (Integer) r.get("turn"))

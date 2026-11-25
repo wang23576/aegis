@@ -104,12 +104,8 @@ function StepBlocks({ steps, live = false }: { steps: StepLike[]; live?: boolean
             {t.done === false ? <span className="tool-running">运行中…</span> : null}
           </div>
         ));
-        const tokens = s.usage && Object.keys(s.usage).length
-          ? <span className="step-tokens">
-              {s.usage.inputTokens != null ? `↑${s.usage.inputTokens} ` : ''}
-              {s.usage.outputTokens != null ? `↓${s.usage.outputTokens} ` : ''}
-              {s.usage.reasoningTokens != null ? `💭${s.usage.reasoningTokens}` : ''}
-            </span>
+        const tokens = fmtTokens(s.usage)
+          ? <span className="step-tokens" title="本次模型调用总 token（明细保留在轨迹与导出中）">{fmtTokens(s.usage)}</span>
           : null;
         if (isAnswer) {
           return (
@@ -238,8 +234,10 @@ function ChatView({
             )}
           </div>
         ))}
-        {runtimeEvents.filter(e => e.type === 'REQUEST_STOP' || e.type === 'EXCEED_MAX_ITERS'
-          || e.type === 'ALL_TOOLS_DENIED' || e.type === 'SUBAGENT_EXPOSED').map((e, i) => (
+        {runtimeEvents.filter(e =>
+          (e.type === 'REQUEST_STOP' && !/permission/i.test(e.summary || ''))
+          || e.type === 'EXCEED_MAX_ITERS' || e.type === 'ALL_TOOLS_DENIED'
+          || e.type === 'SUBAGENT_EXPOSED').map((e, i) => (
           <div key={i} className="runtime-event">ⓘ {e.type}{e.summary ? ` · ${e.summary}` : ''}</div>
         ))}
         {stream && (
@@ -320,6 +318,15 @@ function fmtMs(ms: number): string {
   if (ms == null) return '—';
   if (ms >= 1000) return (ms / 1000).toFixed(ms < 10000 ? 2 : 0) + ' 秒';
   return ms + ' 毫秒';
+}
+
+/** DSH-style compact token count: one number, k for thousands. */
+function fmtTokens(usage: Record<string, number> | undefined): string {
+  if (!usage) return '';
+  const n = usage.totalTokens != null ? usage.totalTokens
+    : (usage.inputTokens || 0) + (usage.outputTokens || 0);
+  if (!n) return '';
+  return n >= 1000 ? (n / 1000).toFixed(n >= 10000 ? 0 : 1).replace(/\.0$/, '') + 'k' : String(n);
 }
 
 /** Markdown → one-line plain text for the ledger (mirrors DSH previewMarkdown). */
@@ -493,6 +500,7 @@ function TrajectoryView({ sessionId }: { sessionId: string }) {
       }
     }
     for (const e of chat.runtimeEvents) {
+      if (e.type === 'REQUEST_STOP' && /permission/i.test(e.summary || '')) continue;
       if (['REQUEST_STOP', 'EXCEED_MAX_ITERS', 'ALL_TOOLS_DENIED', 'SUBAGENT_EXPOSED'].includes(e.type)) {
         rows.push({ kind: 'context', turn: liveTurn,
           text: e.type + (e.summary ? ' · ' + e.summary : ''), detail: e.summary || '',
@@ -685,14 +693,10 @@ function TrajectoryView({ sessionId }: { sessionId: string }) {
                   ) : (
                     <pre className="payload">{sel.detail || '(空)'}</pre>
                   )}
-                  {sel.meta?.usage && Object.keys(sel.meta.usage).length > 0 && (
-                    <>
-                      <div className="details-tab">Token 用量</div>
-                      <dl className="kv">
-                        {Object.entries(sel.meta.usage).map(([k, v]) =>
-                          <React.Fragment key={k}><dt>{k}</dt><dd className="mono">{String(v)}</dd></React.Fragment>)}
-                      </dl>
-                    </>
+                  {fmtTokens(sel.meta?.usage) && (
+                    <div className="details-duration" title="明细保留在原始事件与导出中">
+                      Token {fmtTokens(sel.meta.usage)}
+                    </div>
                   )}
                 </>
               )}

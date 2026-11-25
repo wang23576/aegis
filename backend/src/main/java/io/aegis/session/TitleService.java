@@ -50,6 +50,20 @@ public class TitleService {
         }
     }
 
+    /** Instant deterministic title for the SSE response; the LLM title replaces it shortly after. */
+    public String fallbackTitle(String sessionId) {
+        try {
+            List<String> firsts = jdbc.query(
+                    "SELECT content FROM chat_message WHERE session_id=? AND role='user' ORDER BY id LIMIT 1",
+                    (rs, n) -> rs.getString(1), sessionId);
+            if (firsts.isEmpty()) return "";
+            String line = firsts.get(0).replaceAll("\\s+", " ").trim();
+            return line.length() <= 24 ? line : line.substring(0, 24) + "…";
+        } catch (Exception e) {
+            return "";
+        }
+    }
+
     /** One auxiliary LLM call; mirrors DSH's first-prompt-llm policy (one line, language of the message, short). */
     private String generate(String firstPrompt) throws Exception {
         String system = """

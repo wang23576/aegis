@@ -276,3 +276,16 @@
   - Playwright 运行中截取正在输出的气泡与前序步骤：`earlierBodies` 只含该步自己的思考+工具，不含当前回复（tmp/issue021_live_text.png）
   - 轨迹默认 2 思考行 + 1 回复行 + 3 工具行 + 2 关键事件行；点「内部事件」后新增 8 条框架审计行（tmp/issue021_traj_clean.png / issue021_traj_all.png）
   - 详情面板：点思考行显示"思考过程（本次模型调用）"+完整思考；点回复行只显示回复正文，不再重复思考
+
+---
+
+### ISSUE-022  权限确认事件干扰对话、标题生成阻塞 done、token 展示过细
+- 发现时间：2026-11-25（Alan 六问：REQUEST_STOP 是什么、memory_save 如何触发、完成后为何等待、token 三连数字、Token 用量过细、USER_CONFIRM_RESULT 是什么）
+- 机制说明（框架源码实证）：
+  - `REQUEST_STOP(permission asking)`：来自 agentscope-core `GenerateReason.PERMISSION_ASKING`，表示工具进入权限确认门禁、本轮生成被有意暂停；Aegis 默认自动批准并在下一轮执行工具，不是异常也不是用户中断。`USER_CONFIRM_RESULT` 是确认结果事件（Aegis 自动批准）
+  - `memory_save`：agentscope-harness `MemorySaveTool` 注册给模型的工具，工具描述为"Persist one or more facts to long-term memory..."；`WorkspaceContextMiddleware` 还向 system prompt 注入 "## Memory Persistence / Use the memory_save tool..."，所以 LLM 会在用户要求记住或观察到重要偏好/决策/上下文时主动调用；另有 MemoryFlushMiddleware 在会话结束时自动提取到每日 ledger（另一条机制）。可从 AgentRepository 的工具清单与 MemoryConfig 开关控制
+- 修复：
+  - 对话页不再显示 `REQUEST_STOP · permission asking`（轨迹里改为中文"工具权限确认（自动批准）"并归入内部事件，默认折叠，原始事件与导出保留）
+  - 标题生成改为与对话并行的异步任务；请求线程捕获 `AuthContext` 用户 ID 传入异步 lambda；done 立即发出，若 LLM 标题未完成则用首条消息截断了标题即时回传，LLM 标题随后落库（下次列表刷新可见）
+  - 步骤/详情 token 从 `↑21008 ↓655 💭0` 和 8 行明细精简为单个总数（上 k，如 `9.8k` / `11k`），明细仍在原始事件与导出 zip
+- 复测：SSE 实测 `step_end` 3.83s → `done` 4.78s（原 2.64s → 8.53s，标题阻塞 5.9s 已消除）；Playwright 实测对话无权限提示、token 为 `9.8k/11k`、完成后按钮回到"发送"；轨迹主表无内部权限事件，展开开关可见
