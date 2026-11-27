@@ -13,7 +13,6 @@ export default function WorkspaceView({ agentId }: { agentId: string }) {
   const [content, setContent] = useState<FileContent | null>(null);
   const [contentLoading, setContentLoading] = useState(false);
   const [showHidden, setShowHidden] = useState(false);
-  const [refreshMode, setRefreshMode] = useState<'manual' | 'auto'>('manual');
   const [wrap, setWrap] = useState(false);
 
   const loadTree = useCallback(async () => {
@@ -30,12 +29,6 @@ export default function WorkspaceView({ agentId }: { agentId: string }) {
   }, [agentId]);
 
   useEffect(() => { loadTree(); }, [loadTree]);
-
-  useEffect(() => {
-    if (refreshMode !== 'auto') return;
-    const id = setInterval(loadTree, 5000);
-    return () => clearInterval(id);
-  }, [refreshMode, loadTree]);
 
   useEffect(() => {
     if (!selected) { setContent(null); return; }
@@ -79,12 +72,7 @@ export default function WorkspaceView({ agentId }: { agentId: string }) {
       <div className="ws-tree">
         <div className="ws-toolbar">
           <span className="ws-title">Workspace</span>
-          <button className="ws-btn" title="手动刷新" onClick={loadTree}>↻</button>
-          <button
-            className={'ws-btn' + (refreshMode === 'auto' ? ' active' : '')}
-            title={refreshMode === 'auto' ? '自动刷新（5 秒）已开启' : '切换为自动刷新（5 秒）'}
-            onClick={() => setRefreshMode(m => m === 'auto' ? 'manual' : 'auto')}
-          >⟳{(refreshMode === 'auto') ? ' auto' : ''}</button>
+          <button className="ws-btn" title="刷新文件树" onClick={loadTree}>↻</button>
           <button
             className={'ws-btn' + (showHidden ? ' active' : '')}
             title={showHidden ? '隐藏隐藏文件' : '显示隐藏文件'}
