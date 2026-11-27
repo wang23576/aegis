@@ -1,9 +1,20 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { api, FileContent, FileNode } from './api';
 
+/** Collect all directory paths from a tree (used for expand-all / collapse-all). */
+function collectDirs(nodes: FileNode[], out: string[] = []): string[] {
+  for (const n of nodes) {
+    if (n.type === 'dir') {
+      out.push(n.path);
+      if (n.children) collectDirs(n.children, out);
+    }
+  }
+  return out;
+}
+
 /**
  * Read-only workspace browser (paw/DSH parity).
- * Left: file tree (refresh modes + hidden-file toggle). Right: read-only viewer.
+ * Left: expandable file tree + read-only viewer.
  */
 export default function WorkspaceView({ agentId }: { agentId: string }) {
   const [tree, setTree] = useState<FileNode[] | null>(null);
@@ -14,6 +25,7 @@ export default function WorkspaceView({ agentId }: { agentId: string }) {
   const [contentLoading, setContentLoading] = useState(false);
   const [showHidden, setShowHidden] = useState(false);
   const [wrap, setWrap] = useState(false);
+  const [expanded, setExpanded] = useState<Set<string>>(new Set());
 
   const loadTree = useCallback(async () => {
     setLoading(true);
@@ -21,6 +33,7 @@ export default function WorkspaceView({ agentId }: { agentId: string }) {
     try {
       const nodes = await api.workspaceTree(agentId);
       setTree(nodes);
+      setExpanded(new Set(collectDirs(nodes)));
     } catch (e) {
       setError(e instanceof Error ? e.message : '加载文件树失败');
     } finally {
@@ -50,6 +63,15 @@ export default function WorkspaceView({ agentId }: { agentId: string }) {
     return keep(tree);
   }, [tree, showHidden]);
 
+  const allDirs = useMemo(() => collectDirs(visibleTree || []), [visibleTree]);
+  const allExpanded = allDirs.length > 0 && allDirs.every(p => expanded.has(p));
+  const toggleAll = () => setExpanded(allExpanded ? new Set() : new Set(allDirs));
+  const toggleDir = (path: string) => setExpanded(prev => {
+    const next = new Set(prev);
+    if (next.has(path)) next.delete(path); else next.add(path);
+    return next;
+  });
+
   const viewer = contentLoading
     ? <div className="ws-empty">加载中…</div>
     : !content
@@ -73,16 +95,20 @@ export default function WorkspaceView({ agentId }: { agentId: string }) {
         <div className="ws-toolbar">
           <span className="ws-title">Workspace</span>
           <button className="ws-btn" title="刷新文件树" onClick={loadTree}>↻</button>
+          <button className="ws-btn" title={allExpanded ? '收缩全部目录' : '展开全部目录'} onClick={toggleAll}>
+            {allExpanded ? '⊟' : '⊞'}
+          </button>
           <button
             className={'ws-btn' + (showHidden ? ' active' : '')}
             title={showHidden ? '隐藏隐藏文件' : '显示隐藏文件'}
             onClick={() => setShowHidden(s => !s)}
-          >{showHidden ? '👁 显示隐藏' : '👁 隐藏项'}</button>
+          >👁</button>
         </div>
         <div className="ws-tree-scroll">
           {error && <div className="ws-empty">{error}</div>}
           {!error && !tree && !loading && <div className="ws-empty">加载中…</div>}
-          {tree && <TreeNodes nodes={visibleTree || []} depth={0} selected={selected} onSelect={setSelected} />}
+          {tree && <TreeNodes nodes={visibleTree || []} depth={0} selected={selected}
+            expanded={expanded} onToggle={toggleDir} onSelect={setSelected} />}
         </div>
       </div>
       <div className="ws-view">
@@ -103,27 +129,35 @@ export default function WorkspaceView({ agentId }: { agentId: string }) {
   );
 }
 
-function TreeNodes({ nodes, depth, selected, onSelect }: {
-  nodes: FileNode[]; depth: number; selected: string | null; onSelect: (p: string) => void;
+function TreeNodes({ nodes, depth, selected, expanded, onToggle, onSelect }: {
+  nodes: FileNode[]; depth: number; selected: string | null;
+  expanded: Set<string>; onToggle: (p: string) => void; onSelect: (p: string) => void;
 }) {
   return (
     <>
-      {nodes.map(n => (
-        <div key={n.path}>
-          <div
-            className={'ws-node' + (selected === n.path ? ' active' : '')}
-            style={{ paddingLeft: 8 + depth * 14 }}
-            onClick={() => n.type === 'file' && onSelect(n.path)}
-          >
-            <span className="ws-node-icon">{n.type === 'dir' ? '📁' : '📄'}</span>
-            <span className="ws-node-name">{n.name}</span>
-            {n.type === 'file' && n.size != null && <span className="ws-node-size">{n.size}</span>}
+      {nodes.map(n => {
+        const isDir = n.type === 'dir';
+        const isOpen = expanded.has(n.path);
+        return (
+          <div key={n.path}>
+            <div
+              className={'ws-node' + (selected === n.path ? ' active' : '') + (isDir ? ' ws-dir' : '')}
+              style={{ paddingLeft: 8 + depth * 14 }}
+              onClick={() => isDir ? onToggle(n.path) : onSelect(n.path)}
+              title={isDir ? (isOpen ? '收缩目录' : '展开目录') : n.path}
+            >
+              <span className="ws-node-arrow">{isDir ? (isOpen ? '▾' : '▸') : ''}</span>
+              <span className="ws-node-icon">{isDir ? (isOpen ? '📂' : '📁') : '📄'}</span>
+              <span className="ws-node-name">{n.name}</span>
+              {!isDir && n.size != null && <span className="ws-node-size">{n.size}</span>}
+            </div>
+            {isDir && isOpen && n.children && n.children.length > 0 && (
+              <TreeNodes nodes={n.children} depth={depth + 1} selected={selected}
+                expanded={expanded} onToggle={onToggle} onSelect={onSelect} />
+            )}
           </div>
-          {n.children && n.children.length > 0 && (
-            <TreeNodes nodes={n.children} depth={depth + 1} selected={selected} onSelect={onSelect} />
-          )}
-        </div>
-      ))}
+        );
+      })}
     </>
   );
 }

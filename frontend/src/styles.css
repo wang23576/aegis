@@ -272,7 +272,7 @@ th { color: #888; font-weight: 500; background: #fafbfc; }
 .ws-tree { width: 280px; flex-shrink: 0; border-right: 1px solid #eceff3; display: flex; flex-direction: column; min-height: 0; }
 .ws-toolbar { display: flex; align-items: center; gap: 6px; padding: 8px 10px; border-bottom: 1px solid #eef0f4; flex-shrink: 0; }
 .ws-title { flex: 1; font-size: 12px; font-weight: 650; color: #888; text-transform: uppercase; letter-spacing: .06em; }
-.ws-btn { background: #f6f7fa; border: 1px solid #e0e3ec; color: #555; border-radius: 5px;
+.ws-btn { flex-shrink: 0; white-space: nowrap; background: #f6f7fa; border: 1px solid #e0e3ec; color: #555; border-radius: 5px;
   padding: 2px 8px; font-size: 12px; line-height: 1.5; }
 .ws-btn:hover { background: #eef2ff; color: #4f46e5; border-color: #c7d2fe; }
 .ws-btn.active { background: #eef2ff; color: #4f46e5; border-color: #c7d2fe; }
@@ -281,6 +281,7 @@ th { color: #888; font-weight: 500; background: #fafbfc; }
   font-size: 13px; color: #333; cursor: pointer; white-space: nowrap; overflow: hidden; user-select: none; }
 .ws-node:hover { background: #f3f4f8; }
 .ws-node.active { background: #eef2ff; color: #3730a3; }
+.ws-node-arrow { flex-shrink: 0; width: 12px; text-align: center; color: #9aa1b1; font-size: 11px; }
 .ws-node-icon { flex-shrink: 0; font-size: 12px; }
 .ws-node-name { overflow: hidden; text-overflow: ellipsis; }
 .ws-node-size { margin-left: auto; flex-shrink: 0; font-size: 10px; color: #9aa1b1; font-variant-numeric: tabular-nums; }
