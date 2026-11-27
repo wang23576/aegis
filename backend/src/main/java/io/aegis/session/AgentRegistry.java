@@ -6,11 +6,13 @@ import io.agentscope.extensions.model.openai.OpenAIChatModel;
 import io.agentscope.harness.agent.HarnessAgent;
 import io.aegis.agent.Agent;
 import io.aegis.agent.AgentRepository;
+import io.aegis.skill.SkillToolGroupStore;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 
 import java.nio.file.Path;
+import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 
@@ -24,11 +26,13 @@ public class AgentRegistry {
     private static final Logger log = LoggerFactory.getLogger(AgentRegistry.class);
 
     private final AgentRepository agents;
+    private final SkillToolGroupStore toolGroups;
     private final Map<String, HarnessAgent> cache = new ConcurrentHashMap<>();
     private final Model defaultModel;
 
-    public AgentRegistry(AgentRepository agents) {
+    public AgentRegistry(AgentRepository agents, SkillToolGroupStore toolGroups) {
         this.agents = agents;
+        this.toolGroups = toolGroups;
         this.defaultModel = buildModel();
     }
 
@@ -73,11 +77,39 @@ public class AgentRegistry {
         String wsRoot = System.getenv().getOrDefault("AEGIS_WORKSPACE_ROOT", "./data/workspaces");
         Path workspace = Path.of(wsRoot, agentId);
         log.info("Building HarnessAgent for {} with workspace {}", agentId, workspace.toAbsolutePath());
-        return HarnessAgent.builder()
+        HarnessAgent agent = HarnessAgent.builder()
                 .model(defaultModel)
                 .workspace(workspace)
                 .sysPrompt(meta.sysPrompt == null ? "You are a helpful assistant." : meta.sysPrompt)
                 .build();
+        registerToolGroups(agentId, agent);
+        return agent;
+    }
+
+    /**
+     * Replay persisted SkillToolGroups into the freshly built agent's Toolkit.
+     * Uses createSkillToolGroup + addToolToGroup (not registerToolGroup with a
+     * pre-built group): the framework only populates its tool→group index via
+     * addToolToGroup, so the latter silently leaves grouped tools unindexed.
+     */
+    private void registerToolGroups(String agentId, HarnessAgent agent) {
+        List<SkillToolGroupStore.Group> groups = toolGroups.list(agentId);
+        if (groups.isEmpty()) return;
+        var tk = agent.getToolkit();
+        if (tk == null) { log.warn("Toolkit unavailable; skipping tool groups for {}", agentId); return; }
+        for (SkillToolGroupStore.Group g : groups) {
+            try {
+                // active=false: a SkillToolGroup is activated by the framework when
+                // its bound skill is loaded, not by a persisted flag.
+                tk.createSkillToolGroup(g.name(),
+                        g.description() == null ? "" : g.description(), false, g.activateOnSkill());
+                for (String tool : g.tools()) tk.addToolToGroup(g.name(), tool);
+                log.info("Registered tool group {} for agent {} -> skill {} ({} tools)",
+                        g.name(), agentId, g.activateOnSkill(), g.tools().size());
+            } catch (Exception e) {
+                log.warn("Failed to register tool group {} for {}: {}", g.name(), agentId, e.getMessage());
+            }
+        }
     }
 
     /**

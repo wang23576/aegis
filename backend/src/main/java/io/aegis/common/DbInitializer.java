@@ -114,6 +114,22 @@ public class DbInitializer {
               UNIQUE(agent_id, skill_name, version)
             )""");
         jdbc.execute("CREATE INDEX IF NOT EXISTS idx_skillver_skill ON skill_version(agent_id, skill_name, version)");
+        // SkillToolGroup definitions: a named tool bundle activated when a skill is loaded.
+        // tools_json holds the ordered list of tool names; activation is driven by the skill,
+        // so there is deliberately no persisted "active" flag (framework registers it inactive).
+        jdbc.execute("""
+            CREATE TABLE IF NOT EXISTS skill_tool_group (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              agent_id TEXT NOT NULL,
+              name TEXT NOT NULL,
+              description TEXT,
+              activate_on_skill TEXT NOT NULL,
+              tools_json TEXT NOT NULL,
+              created_at TEXT NOT NULL DEFAULT (datetime('now')),
+              updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+              UNIQUE(agent_id, name)
+            )""");
+        jdbc.execute("CREATE INDEX IF NOT EXISTS idx_skillgroup_agent ON skill_tool_group(agent_id)");
         jdbc.execute("CREATE INDEX IF NOT EXISTS idx_session_user ON chat_session(user_id)");
         jdbc.execute("CREATE INDEX IF NOT EXISTS idx_msg_session ON chat_message(session_id)");
         jdbc.execute("CREATE INDEX IF NOT EXISTS idx_event_session ON chat_event(session_id,seq)");

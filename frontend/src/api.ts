@@ -97,6 +97,15 @@ export interface SkillVersion {
   note: string | null;
 }
 
+export interface SkillToolGroupRec {
+  name: string;
+  description: string;
+  activateOnSkill: string;
+  tools: string[];
+  createdAt: string;
+  updatedAt: string;
+}
+
 const TOKEN_KEY = 'aegis_token';
 
 export function getToken(): string | null {
@@ -193,6 +202,19 @@ export const api = {
     return request(`/api/agents/${agentId}/skills/${encodeURIComponent(name)}/versions/${version}/rollback`, {
       method: 'POST',
     });
+  },
+
+  listToolGroups(agentId: string): Promise<SkillToolGroupRec[]> {
+    return request(`/api/agents/${agentId}/tool-groups`);
+  },
+  createToolGroup(agentId: string, body: { name: string; description: string; activateOnSkill: string; tools: string[] }): Promise<SkillToolGroupRec> {
+    return request(`/api/agents/${agentId}/tool-groups`, { method: 'POST', body: JSON.stringify(body) });
+  },
+  updateToolGroup(agentId: string, name: string, body: { description: string; activateOnSkill: string; tools: string[] }): Promise<SkillToolGroupRec> {
+    return request(`/api/agents/${agentId}/tool-groups/${encodeURIComponent(name)}`, { method: 'PUT', body: JSON.stringify(body) });
+  },
+  deleteToolGroup(agentId: string, name: string): Promise<any> {
+    return request(`/api/agents/${agentId}/tool-groups/${encodeURIComponent(name)}`, { method: 'DELETE' });
   },
 
   listSessions(): Promise<SessionInfo[]> {

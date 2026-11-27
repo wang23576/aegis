@@ -373,3 +373,29 @@ th { color: #888; font-weight: 500; background: #fafbfc; }
 .skill-preview-head { display: flex; align-items: center; justify-content: space-between; font-size: 12px; color: #555; margin-bottom: 6px; }
 .skill-version-preview pre { margin: 0; max-height: 240px; overflow: auto; background: #fff; }
 .tool-btn.active { color: #4f46e5; border-color: #c7d2fe; background: #eef2ff; }
+
+/* ---- SkillToolGroup management (Tool tab → 工具分组) ---- */
+.tg-body { display: flex; flex-direction: column; min-height: 0; }
+.tg-layout { flex: 1; display: flex; min-height: 0; margin-top: 10px; }
+.tg-list { width: 250px; flex-shrink: 0; border-right: 1px solid #eceff3; overflow: auto; padding: 10px; background: #fafbfc; }
+.tg-item { padding: 9px 10px; border: 1px solid transparent; border-radius: 6px; margin-bottom: 4px; cursor: pointer; }
+.tg-item:hover { background: #fff; border-color: #eceff3; }
+.tg-item.active { background: #fff; border-color: #c7d2fe; box-shadow: 0 1px 3px rgba(79,70,229,.08); }
+.tg-item-name { font-size: 13px; color: #2f3542; font-family: Menlo, Consolas, monospace; font-weight: 600; }
+.tg-item-meta { font-size: 11px; color: #9aa1b1; margin-top: 4px; }
+.tg-detail { flex: 1; min-width: 0; overflow: auto; }
+.tg-form { padding: 4px 18px 28px; display: flex; flex-direction: column; gap: 14px; }
+.tg-form-title { font-size: 14px; font-weight: 650; color: #2f3542; font-family: Menlo, Consolas, monospace; }
+.tg-form label { display: flex; flex-direction: column; gap: 6px; font-size: 12px; color: #555; }
+.tg-form input, .tg-form select { border: 1px solid #dfe3ec; border-radius: 5px; padding: 8px 10px; font-size: 12.5px; color: #2f3542; outline: none; max-width: 520px; }
+.tg-form input:focus, .tg-form select:focus { border-color: #a5b4fc; }
+.tg-readonly-row { display: flex; gap: 12px; font-size: 12.5px; color: #2f3542; align-items: baseline; }
+.tg-label { font-size: 11px; color: #9aa1b1; width: 60px; flex-shrink: 0; }
+.tg-skill-tag { font-family: Menlo, Consolas, monospace; color: #6366f1; background: #eef2ff; border-radius: 4px; padding: 2px 7px; }
+.tg-section-title { font-size: 11px; font-weight: 650; color: #9aa1b1; text-transform: uppercase; letter-spacing: .06em; margin-bottom: 8px; }
+.tg-filter { max-width: 320px !important; margin-bottom: 8px; }
+.tg-tool-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 4px 12px; max-height: 320px; overflow: auto; border: 1px solid #eceff3; border-radius: 6px; padding: 10px; }
+.tg-tool-row { flex-direction: row !important; align-items: center; gap: 8px !important; font-family: Menlo, Consolas, monospace; font-size: 11.5px !important; cursor: pointer; padding: 3px 0; }
+.tg-tool-row input { width: auto; }
+.tg-tool-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.tg-chip { font-size: 11.5px; font-family: Menlo, Consolas, monospace; color: #4338ca; background: #eef2ff; border: 1px solid #e0e7ff; border-radius: 4px; padding: 3px 8px; }

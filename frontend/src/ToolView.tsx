@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { api } from './api';
+import ToolGroupView from './ToolGroupView';
 
 /**
  * Tool management (Harness → Tool tab).
@@ -29,7 +30,7 @@ function booleanField(v: any): boolean {
 
 export default function ToolView({ agentId }: { agentId: string }) {
   const [view, setView] = useState<View | null>(null);
-  const [tab, setTab] = useState<'builtin' | 'mcp'>('builtin');
+  const [tab, setTab] = useState<'builtin' | 'mcp' | 'groups'>('builtin');
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
@@ -129,13 +130,16 @@ export default function ToolView({ agentId }: { agentId: string }) {
       <div className="tool-bar">
         <button className={tab === 'builtin' ? 'active' : ''} onClick={() => setTab('builtin')}>🔧 内置工具</button>
         <button className={tab === 'mcp' ? 'active' : ''} onClick={() => setTab('mcp')}>🔌 MCP 服务</button>
+        <button className={tab === 'groups' ? 'active' : ''} onClick={() => setTab('groups')}>🧩 工具分组</button>
         <span className="tool-spacer" />
-        {dirty && <span className="tool-dirty">未保存</span>}
-        <button className="tool-btn" onClick={load} title="重新加载">↻</button>
-        <button className="tool-btn primary" onClick={save} disabled={!dirty || saving}>{saving ? '保存中…' : '保存'}</button>
+        {tab !== 'groups' && dirty && <span className="tool-dirty">未保存</span>}
+        {tab !== 'groups' && <button className="tool-btn" onClick={load} title="重新加载">↻</button>}
+        {tab !== 'groups' && <button className="tool-btn primary" onClick={save} disabled={!dirty || saving}>{saving ? '保存中…' : '保存'}</button>}
       </div>
       {error && <div className="tool-error">{error}</div>}
-      {loading && !view ? <div className="ws-empty">加载中…</div> : (
+      {tab === 'groups' ? (
+        <ToolGroupView agentId={agentId} tools={view?.builtins || []} />
+      ) : loading && !view ? <div className="ws-empty">加载中…</div> : (
         tab === 'builtin' ? (
           <div className="tool-body">
             <div className="tool-hint">内置工具由 Harness 提供。关闭的工具会从智能体的可用工具中排除，下次会话生效。</div>
