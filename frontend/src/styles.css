@@ -297,3 +297,43 @@ th { color: #888; font-weight: 500; background: #fafbfc; }
   background: #fcfcfd; color: #1f2430; font: 12.5px/1.6 Menlo, Consolas, 'Courier New', monospace;
   overflow: auto; min-height: 0; }
 .ws-empty { padding: 40px 20px; color: #9aa1b1; font-size: 13px; text-align: center; }
+
+/* Tool management (Harness → Tool tab) */
+.tool-view { flex: 1; display: flex; flex-direction: column; min-height: 0; position: relative; }
+.tool-bar { display: flex; align-items: center; gap: 8px; padding: 8px 16px; border-bottom: 1px solid #eceff3; flex-shrink: 0; }
+.tool-bar > button:first-child, .tool-bar > button:nth-child(2) { background: none; border: none; color: #888; font-size: 13px; padding: 6px 4px; border-bottom: 2px solid transparent; }
+.tool-bar > button.active { color: #4f46e5; border-bottom-color: #4f46e5; }
+.tool-spacer { flex: 1; }
+.tool-dirty { font-size: 11px; color: #b45309; }
+.tool-btn { background: #f6f7fa; border: 1px solid #e0e3ec; color: #555; border-radius: 5px; padding: 4px 10px; font-size: 12px; cursor: pointer; white-space: nowrap; }
+.tool-btn:hover { background: #eef2ff; color: #4f46e5; border-color: #c7d2fe; }
+.tool-btn.primary { background: #4f46e5; border-color: #4f46e5; color: #fff; }
+.tool-btn.primary:hover { background: #4338ca; }
+.tool-btn:disabled { opacity: .45; cursor: not-allowed; }
+.tool-btn.danger:hover { background: #fee2e2; color: #b91c1c; border-color: #fecaca; }
+.tool-body { flex: 1; overflow: auto; padding: 14px 18px 28px; }
+.tool-hint { font-size: 12px; color: #8a93a3; background: #f7f8fb; border: 1px solid #eef0f4; border-radius: 6px; padding: 8px 12px; margin-bottom: 14px; line-height: 1.6; }
+.tool-group { margin-bottom: 16px; }
+.tool-group-title { font-size: 11px; font-weight: 650; color: #9aa1b1; text-transform: uppercase; letter-spacing: .06em; margin-bottom: 6px; }
+.tool-row { display: flex; align-items: flex-start; gap: 10px; padding: 9px 12px; border: 1px solid #eceff3; border-radius: 6px; margin-bottom: 6px; cursor: pointer; background: #fff; }
+.tool-row:hover { border-color: #c7d2fe; }
+.tool-row input { margin-top: 3px; accent-color: #4f46e5; }
+.tool-row-main { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.tool-row-name { font-size: 13px; color: #2f3542; font-family: Menlo, Consolas, monospace; }
+.tool-row-desc { font-size: 11.5px; color: #8a93a3; }
+.tool-tag { font-size: 10px; color: #6366f1; background: #eef2ff; border-radius: 4px; padding: 1px 6px; margin-left: 8px; }
+.tool-toolbar { display: flex; justify-content: flex-end; margin-bottom: 10px; }
+.tool-server { border: 1px solid #eceff3; border-radius: 7px; padding: 10px 12px; margin-bottom: 8px; background: #fff; }
+.tool-server-head { display: flex; align-items: center; gap: 8px; }
+.tool-server-name { font-size: 13px; font-weight: 600; color: #2f3542; font-family: Menlo, Consolas, monospace; }
+.tool-server-meta { font-size: 11.5px; color: #8a93a3; margin-top: 6px; font-family: Menlo, Consolas, monospace; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tool-error { font-size: 12px; color: #b91c1c; background: #fef2f2; padding: 6px 16px; }
+.tool-modal-mask { position: absolute; inset: 0; background: rgba(24,28,40,.42); display: flex; align-items: center; justify-content: center; z-index: 80; }
+.tool-modal { background: #fff; border-radius: 10px; width: min(520px, 92%); max-height: 90%; overflow: auto; box-shadow: 0 18px 50px rgba(20,24,35,.25); }
+.tool-modal-head { display: flex; align-items: center; justify-content: space-between; padding: 12px 16px; border-bottom: 1px solid #eceff3; font-size: 14px; }
+.tool-form { padding: 12px 16px; display: flex; flex-direction: column; gap: 10px; }
+.tool-form label { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: #555; }
+.tool-form input[type=text], .tool-form input:not([type]), .tool-form select, .tool-form textarea { border: 1px solid #dfe3ec; border-radius: 5px; padding: 7px 9px; font-size: 12.5px; font-family: Menlo, Consolas, monospace; color: #2f3542; outline: none; }
+.tool-form input:focus, .tool-form select:focus, .tool-form textarea:focus { border-color: #a5b4fc; }
+.tool-form input[type=checkbox] { accent-color: #4f46e5; }
+.tool-modal-foot { padding: 10px 16px; border-top: 1px solid #eceff3; display: flex; justify-content: flex-end; }

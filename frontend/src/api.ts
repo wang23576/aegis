@@ -259,6 +259,18 @@ export const api = {
     URL.revokeObjectURL(url);
   },
 
+  toolView(agentId: string): Promise<{
+    builtins: Array<{ name: string; category: string; readOnly: boolean; description: string; enabled: boolean }>;
+    allow: string[];
+    deny: string[];
+    mcpServers: Record<string, Record<string, any>>;
+  }> {
+    return request(`/api/agents/${agentId}/tools/config`);
+  },
+  saveTools(agentId: string, body: { allow: string[]; deny: string[]; mcpServers: Record<string, Record<string, any>> }): Promise<any> {
+    return request(`/api/agents/${agentId}/tools/config`, { method: 'PUT', body: JSON.stringify(body) });
+  },
+
   listUsers(): Promise<any[]> {
     return request('/api/users');
   },
