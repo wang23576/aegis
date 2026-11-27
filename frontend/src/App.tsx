@@ -207,6 +207,7 @@ function ChatView({
 
   return (
     <>
+      <div className="chat-head">{session.title}</div>
       <div className="chat-area" ref={areaRef} onScroll={onAreaScroll}>
         {showJump && (
           <button
@@ -834,6 +835,10 @@ interface SessionMenu { id: string; x: number; y: number }
 /** Harness management tabs for agents the user can manage (paw order). */
 const HARNESS_TABS = ['Workspace', 'Skill', 'Subagent', 'Tool', 'Sessions', 'Channel', 'Setting'] as const;
 type HarnessTab = typeof HARNESS_TABS[number];
+const TAB_ICONS: Record<string, string> = {
+  Workspace: '📁', Skill: '🧩', Subagent: '🤖', Tool: '🔧',
+  Sessions: '🗂', Channel: '📡', Setting: '⚙️',
+};
 
 function Workspace({ user, onLogout }: { user: CurrentUser; onLogout: () => void }) {
   const [agents, setAgents] = useState<AgentInfo[]>([]);
@@ -916,8 +921,9 @@ function Workspace({ user, onLogout }: { user: CurrentUser; onLogout: () => void
       if (!el) return;
       const available = el.clientWidth;
       const OVERFLOW_BTN = 40;   // "…" button reserve
-      const GAP = 8;
-      const widths = HARNESS_TABS.map(t => t.length * 8 + 28); // approx px per tab
+      const GAP = 22;            // matches .topbar .tabs button gap
+      // icon + space + label, approx px per tab
+      const widths = HARNESS_TABS.map(t => 20 + t.length * 8 + 34);
       let used = 0;
       let fit = 0;
       for (let i = 0; i < HARNESS_TABS.length; i++) {
@@ -1011,20 +1017,23 @@ function Workspace({ user, onLogout }: { user: CurrentUser; onLogout: () => void
         {admin ? <AdminPanel user={user} onClose={() => setAdmin(false)} /> : (
           <>
             <div className="topbar">
-              <div className="title">{current?.title || (showChooser ? '新会话' : 'Aegis')}</div>
+              <div className="agent-name" title={current ? current.agentId : undefined}>
+                {current ? (agents.find(a => a.id === current.agentId)?.name || current.agentId) : 'Aegis'}
+              </div>
               {current && (
                 <div className="tabs" ref={tabsRef}>
-                  <button className={view === 'chat' ? 'active' : ''} onClick={() => { setView('chat'); }}>对话</button>
-                  <button className={view === 'trajectory' ? 'active' : ''} onClick={() => { setView('trajectory'); }}>轨迹</button>
+                  <button className={view === 'chat' ? 'active' : ''} onClick={() => { setView('chat'); }}>💬 对话</button>
+                  <button className={view === 'trajectory' ? 'active' : ''} onClick={() => { setView('trajectory'); }}>🧭 轨迹</button>
                   {canManageAgent && (() => {
                     const visible = HARNESS_TABS.slice(0, HARNESS_TABS.length - overflowCount);
                     const hidden = HARNESS_TABS.slice(HARNESS_TABS.length - overflowCount);
                     const isActive = (t: HarnessTab) => view === 'harness' && harnessTab === t;
                     const pick = (t: HarnessTab) => { setView('harness'); setHarnessTab(t); setOverflowOpen(false); };
+                    const icon = (t: string) => TAB_ICONS[t] || '📄';
                     return (
                       <>
                         {visible.map(t => (
-                          <button key={t} className={isActive(t) ? 'active' : ''} onClick={() => pick(t)}>{t}</button>
+                          <button key={t} className={isActive(t) ? 'active' : ''} onClick={() => pick(t)}>{icon(t)} {t}</button>
                         ))}
                         {overflowCount > 0 && (
                           <div className="tab-overflow" ref={overflowRef}>
@@ -1039,7 +1048,7 @@ function Workspace({ user, onLogout }: { user: CurrentUser; onLogout: () => void
                                 {hidden.map(t => (
                                   <button key={t} role="menuitem"
                                           className={isActive(t) ? 'active' : ''}
-                                          onClick={() => pick(t)}>{t}</button>
+                                          onClick={() => pick(t)}>{icon(t)} {t}</button>
                                 ))}
                               </div>, document.body)}
                           </div>
@@ -1048,6 +1057,7 @@ function Workspace({ user, onLogout }: { user: CurrentUser; onLogout: () => void
                     );
                   })()}
                   <button
+                    className="log-btn"
                     title="下载会话日志（zip：对话 JSONL + 轨迹 + 元数据）"
                     onClick={() => api.downloadSessionLog(current.id)}
                   >⬇ 日志</button>
