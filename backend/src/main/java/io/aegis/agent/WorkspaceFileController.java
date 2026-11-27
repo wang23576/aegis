@@ -35,8 +35,6 @@ public class WorkspaceFileController {
 
     /** Generous cap so JSONL transcripts / AGENTS.md fit; larger files get a placeholder. */
     private static final long MAX_FILE_SIZE = 2 * 1024 * 1024L;
-    /** Tree recursion depth limit (workspace layout is shallow; 6 is plenty). */
-    private static final int MAX_DEPTH = 6;
 
     private final AgentRepository agents;
 
@@ -70,18 +68,23 @@ public class WorkspaceFileController {
         return resolved;
     }
 
-    /** GET /files — recursive file tree (name/path/type/size/children). */
+    /**
+     * GET /files?path= — one directory level only (lazy loading).
+     * Returns direct children of {@code path} ("" = workspace root), each dir
+     * tagged with hasChildren so the UI can show an expand arrow without
+     * walking the whole tree. Keeps large workspaces cheap: one listing per click.
+     */
     @GetMapping("/files")
-    public ResponseEntity<?> tree(
+    public ResponseEntity<?> listDirectory(
             @PathVariable String agentId,
-            @RequestParam(name = "depth", defaultValue = "6") int depth) {
+            @RequestParam(name = "path", defaultValue = "") String path) {
         requireManageable(agentId);
         Path ws = workspaceRoot(agentId);
-        if (!Files.isDirectory(ws)) {
+        Path dir = guard(ws, path);
+        if (!Files.isDirectory(dir)) {
             return ResponseEntity.ok(List.of());
         }
-        int d = Math.max(1, Math.min(depth, MAX_DEPTH));
-        return ResponseEntity.ok(listChildren(ws, ws, d));
+        return ResponseEntity.ok(listChildren(ws, dir));
     }
 
     /** GET /file?path= — UTF-8 content of one file (binary/oversized get placeholders). */
@@ -140,9 +143,9 @@ public class WorkspaceFileController {
     // helpers
     // -----------------------------------------------------------------
 
-    private static List<Map<String, Object>> listChildren(Path base, Path dir, int depth) {
+    /** Lists only the direct children of {@code dir} — one level, no recursion. */
+    private static List<Map<String, Object>> listChildren(Path base, Path dir) {
         List<Map<String, Object>> out = new ArrayList<>();
-        if (depth <= 0 || !Files.isDirectory(dir)) return out;
         try (DirectoryStream<Path> ds = Files.newDirectoryStream(dir)) {
             for (Path entry : ds) {
                 boolean isDir = Files.isDirectory(entry);
@@ -152,7 +155,7 @@ public class WorkspaceFileController {
                 node.put("path", base.relativize(entry).toString().replace('\\', '/'));
                 node.put("type", isDir ? "dir" : "file");
                 if (isDir) {
-                    node.put("children", listChildren(base, entry, depth - 1));
+                    node.put("hasChildren", hasAnyChild(entry));
                 } else {
                     try { node.put("size", Files.size(entry)); } catch (IOException ignored) { node.put("size", 0); }
                 }
@@ -165,6 +168,15 @@ public class WorkspaceFileController {
                 .comparing((Map<String, Object> n) -> !"dir".equals(n.get("type")))
                 .thenComparing(n -> String.valueOf(n.get("name")), String.CASE_INSENSITIVE_ORDER));
         return out;
+    }
+
+    /** Cheap existence check for any child entry (short-circuits on first hit). */
+    private static boolean hasAnyChild(Path dir) {
+        try (DirectoryStream<Path> ds = Files.newDirectoryStream(dir)) {
+            return ds.iterator().hasNext();
+        } catch (IOException e) {
+            return false;
+        }
     }
 
     /** Samples the first bytes; many control chars → treat as binary. */

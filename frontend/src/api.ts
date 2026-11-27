@@ -44,7 +44,7 @@ export interface FileNode {
   path: string;
   type: 'dir' | 'file';
   size?: number;
-  children?: FileNode[];
+  hasChildren?: boolean;   // dir only: whether it has any entries (lazy load hint)
 }
 
 export interface FileContent {
@@ -136,8 +136,8 @@ export const api = {
   workspaceSummary(agentId: string): Promise<WorkspaceSummary> {
     return request(`/api/agents/${agentId}/workspace/summary`);
   },
-  workspaceTree(agentId: string): Promise<FileNode[]> {
-    return request(`/api/agents/${agentId}/workspace/files?depth=6`);
+  workspaceTree(agentId: string, path = ''): Promise<FileNode[]> {
+    return request(`/api/agents/${agentId}/workspace/files?path=${encodeURIComponent(path)}`);
   },
   workspaceFile(agentId: string, path: string): Promise<FileContent> {
     return request(`/api/agents/${agentId}/workspace/file?path=${encodeURIComponent(path)}`);
