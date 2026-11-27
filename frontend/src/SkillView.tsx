@@ -108,8 +108,19 @@ export default function SkillView({ agentId }: { agentId: string }) {
     if (!selected) return;
     setError('');
     try {
-      const r = await api.snapshotSkill(agentId, selected, `手动保存 · ${draftDesc.slice(0, 40)}`);
+      // "保存版本" must persist in-progress edits first, otherwise only the stale
+      // on-disk revision gets snapshotted and the user's changes appear lost.
+      let note = `手动保存 · ${draftDesc.slice(0, 40)}`;
+      if (dirty) {
+        const saved = await api.updateSkill(agentId, selected, { description: draftDesc, content: draftContent });
+        note = `手动保存 · ${saved.description.slice(0, 40)}`;
+        setDirty(false); setEditing(false);
+        setDetail(saved);
+      }
+      const r = await api.snapshotSkill(agentId, selected, note);
       flash(`已保存版本 v${r.version}`);
+      await load();
+      await loadDetail(selected);
       if (showVersions) loadVersions(selected); else { setShowVersions(true); }
     } catch (e) { setError(e instanceof Error ? e.message : '保存版本失败'); }
   }

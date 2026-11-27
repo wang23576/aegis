@@ -146,17 +146,28 @@ public class SkillStore {
         }
     }
 
-    /** Save skill content, snapshotting the previous revision into version history. */
+    /**
+     * Save skill content, snapshotting the previous revision into version history.
+     * A no-op save (description and body unchanged) neither rewrites the file nor
+     * creates a revision — otherwise a plain "save" with no edits would leave a
+     * redundant version behind.
+     */
     public Skill save(String agentId, String name, String description, String content, String note) {
         Path f = skillFile(agentId, name);
+        String newDesc = description == null ? "" : description.trim();
+        String newBody = content == null ? "" : content.strip();
         try {
             Files.createDirectories(f.getParent());
             if (Files.exists(f)) {
                 Skill old = parse(Files.readString(f, StandardCharsets.UTF_8), name);
-                snapshot(agentId, name, old.description(), old.content(), note == null ? "更新前自动快照" : note);
+                if (Objects.equals(old.description(), newDesc) && Objects.equals(old.content(), newBody)) {
+                    return old; // nothing changed: no rewrite, no snapshot
+                }
+                snapshot(agentId, name, old.description(), old.content(),
+                        (note == null || note.isBlank()) ? "更新前自动快照" : note);
             }
-            Files.writeString(f, render(name, description, content), StandardCharsets.UTF_8);
-            return new Skill(name, description, content == null ? "" : content.strip(), "workspace");
+            Files.writeString(f, render(name, newDesc, newBody), StandardCharsets.UTF_8);
+            return new Skill(name, newDesc, newBody, "workspace");
         } catch (IllegalArgumentException e) {
             throw e;
         } catch (Exception e) {
@@ -202,10 +213,26 @@ public class SkillStore {
                 agentId, name, v, description, content, note);
     }
 
-    /** Explicitly snapshot the current revision (user-triggered "save version"). */
+    /**
+     * Explicitly snapshot the current revision (user-triggered "save version").
+     * If the latest revision already holds identical content, no new row is added —
+     * the note is folded into that revision instead, avoiding duplicate versions.
+     */
     public int snapshotNow(String agentId, String name, String note) {
         Skill cur = get(agentId, name);
         if (cur == null) throw new IllegalArgumentException("skill 不存在: " + name);
+        List<Version> existing = versions(agentId, name);
+        if (!existing.isEmpty()) {
+            Version last = existing.get(0); // ORDER BY version DESC
+            if (Objects.equals(last.description(), cur.description())
+                    && Objects.equals(last.content(), cur.content())) {
+                if (note != null && !note.isBlank() && !Objects.equals(last.note(), note)) {
+                    jdbc.update("UPDATE skill_version SET note=? WHERE agent_id=? AND skill_name=? AND version=?",
+                            note, agentId, name, last.version());
+                }
+                return last.version();
+            }
+        }
         snapshot(agentId, name, cur.description(), cur.content(), note == null ? "手动保存版本" : note);
         return jdbc.queryForObject(
                 "SELECT MAX(version) FROM skill_version WHERE agent_id=? AND skill_name=?",
