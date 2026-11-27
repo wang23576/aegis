@@ -80,6 +80,27 @@ public class AgentRegistry {
                 .build();
     }
 
+    /**
+     * Build a throwaway HarnessAgent over an isolated temp workspace, used only to
+     * read the framework's real built-in tool catalog. It deliberately skips any
+     * agent-specific tools.json / MCP config so the list reflects framework defaults.
+     * Caller is responsible for {@link HarnessAgent#close()}.
+     */
+    public HarnessAgent buildCatalogAgent() {
+        Path ws;
+        try {
+            ws = java.nio.file.Files.createTempDirectory("aegis-tool-catalog");
+        } catch (Exception e) {
+            throw new IllegalStateException("cannot create temp workspace for tool catalog", e);
+        }
+        log.debug("Building catalog HarnessAgent with workspace {}", ws.toAbsolutePath());
+        return HarnessAgent.builder()
+                .model(defaultModel)
+                .workspace(ws)
+                .sysPrompt("tool catalog probe")
+                .build();
+    }
+
     /** Invalidate cached agent after config change. */
     public void invalidate(String agentId) {
         cache.remove(agentId);

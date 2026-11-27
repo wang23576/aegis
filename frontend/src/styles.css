@@ -320,7 +320,9 @@ th { color: #888; font-weight: 500; background: #fafbfc; }
 .tool-row input { margin-top: 3px; accent-color: #4f46e5; }
 .tool-row-main { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
 .tool-row-name { font-size: 13px; color: #2f3542; font-family: Menlo, Consolas, monospace; }
-.tool-row-desc { font-size: 11.5px; color: #8a93a3; }
+.tool-row-desc { font-size: 11.5px; color: #8a93a3; line-height: 1.55; word-break: break-word; }
+.tool-desc-more { background: none; border: none; padding: 0 0 0 4px; color: #6366f1; font-size: 11px; cursor: pointer; }
+.tool-desc-more:hover { color: #4338ca; text-decoration: underline; }
 .tool-tag { font-size: 10px; color: #6366f1; background: #eef2ff; border-radius: 4px; padding: 1px 6px; margin-left: 8px; }
 .tool-toolbar { display: flex; justify-content: flex-end; margin-bottom: 10px; }
 .tool-server { border: 1px solid #eceff3; border-radius: 7px; padding: 10px 12px; margin-bottom: 8px; background: #fff; }

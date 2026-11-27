@@ -17,7 +17,11 @@ type View = {
 
 const CATEGORY_LABEL: Record<string, string> = {
   filesystem: '文件', shell: '命令', web: '网络', memory: '记忆', session: '会话',
+  subagent: '子智能体', skill: '技能', task: '任务', artifact: '交付物', plan: '计划',
+  tool: '工具', other: '其他',
 };
+
+const DESC_LIMIT = 120;
 
 function booleanField(v: any): boolean {
   return v === true || v === 'true';
@@ -33,6 +37,7 @@ export default function ToolView({ agentId }: { agentId: string }) {
   const [dirty, setDirty] = useState(false);
   const [editing, setEditing] = useState<string | null>(null);
   const [draft, setDraft] = useState<McpServer>({});
+  const [expandedDesc, setExpandedDesc] = useState<Set<string>>(new Set());
 
   const load = useCallback(async () => {
     setLoading(true); setError('');
@@ -52,6 +57,14 @@ export default function ToolView({ agentId }: { agentId: string }) {
     });
     return Array.from(m.entries());
   }, [view]);
+
+  function toggleDesc(name: string) {
+    setExpandedDesc(prev => {
+      const next = new Set(prev);
+      if (next.has(name)) next.delete(name); else next.add(name);
+      return next;
+    });
+  }
 
   function toggleBuiltin(name: string) {
     if (!view) return;
@@ -136,7 +149,16 @@ export default function ToolView({ agentId }: { agentId: string }) {
                       <span className="tool-row-name">{t.name}
                         <span className="tool-tag">{t.readOnly ? '只读' : '写入'}</span>
                       </span>
-                      <span className="tool-row-desc">{t.description}</span>
+                      <span className="tool-row-desc">
+                        {t.description.length > DESC_LIMIT && !expandedDesc.has(t.name)
+                          ? t.description.slice(0, DESC_LIMIT) + '… ' : t.description}
+                        {t.description.length > DESC_LIMIT && (
+                          <button type="button" className="tool-desc-more"
+                            onClick={e => { e.preventDefault(); e.stopPropagation(); toggleDesc(t.name); }}>
+                            {expandedDesc.has(t.name) ? '收起' : '展开'}
+                          </button>
+                        )}
+                      </span>
                     </span>
                   </label>
                 ))}

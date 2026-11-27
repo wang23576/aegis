@@ -28,7 +28,8 @@ import java.util.*;
  * natively on build: {@code allow}/{@code deny} filter built-in tools and {@code mcpServers}
  * declare MCP connections. We expose a typed view over that file:
  * <ul>
- *   <li>built-in tools are a fixed catalog with per-tool enabled state (allow/deny);
+ *   <li>built-in tools are read from the framework's real toolkit (name/description)
+ *       with per-tool enabled state derived from allow/deny;
  *   <li>MCP servers are stored verbatim in {@code mcpServers} (transport/url/command/...).
  * </ul>
  *
