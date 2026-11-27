@@ -5,6 +5,7 @@ import { api, AgentInfo, CurrentUser, SessionInfo, StepView, clearToken, getToke
 import { useChatState, ensureLoaded, sendChat, LiveStep, LiveTool } from './chatStore';
 import ToolView from './ToolView';
 import WorkspaceView from './WorkspaceView';
+import SkillView from './SkillView';
 
 marked.setOptions({ gfm: true, breaks: true });
 
@@ -1074,7 +1075,9 @@ function Workspace({ user, onLogout }: { user: CurrentUser; onLogout: () => void
                     ? <WorkspaceView agentId={current.agentId} />
                     : harnessTab === 'Tool'
                       ? <ToolView agentId={current.agentId} />
-                      : <div className="ws-empty" style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>{harnessTab} 页签建设中…</div>
+                      : harnessTab === 'Skill'
+                        ? <SkillView agentId={current.agentId} />
+                        : <div className="ws-empty" style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>{harnessTab} 页签建设中…</div>
             )}
           </>
         )}

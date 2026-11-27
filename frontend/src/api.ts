@@ -81,6 +81,22 @@ export interface Message {
   steps?: StepView[];
 }
 
+export interface SkillRec {
+  name: string;
+  description: string;
+  content: string;
+  source: string;
+  versionCount?: number;
+}
+
+export interface SkillVersion {
+  version: number;
+  description: string;
+  content: string;
+  savedAt: string;
+  note: string | null;
+}
+
 const TOKEN_KEY = 'aegis_token';
 
 export function getToken(): string | null {
@@ -144,6 +160,39 @@ export const api = {
   },
   toolCatalog(): Promise<any[]> {
     return request('/api/agents/tools/catalog');
+  },
+
+  // ---- Skill (Harness management) ----
+  listSkills(agentId: string): Promise<SkillRec[]> {
+    return request(`/api/agents/${agentId}/skills`);
+  },
+  getSkill(agentId: string, name: string): Promise<SkillRec> {
+    return request(`/api/agents/${agentId}/skills/${encodeURIComponent(name)}`);
+  },
+  createSkill(agentId: string, body: { name: string; description: string; content: string }): Promise<SkillRec> {
+    return request(`/api/agents/${agentId}/skills`, { method: 'POST', body: JSON.stringify(body) });
+  },
+  updateSkill(agentId: string, name: string, body: { description: string; content: string; note?: string }): Promise<SkillRec> {
+    return request(`/api/agents/${agentId}/skills/${encodeURIComponent(name)}`, { method: 'PUT', body: JSON.stringify(body) });
+  },
+  deleteSkill(agentId: string, name: string): Promise<any> {
+    return request(`/api/agents/${agentId}/skills/${encodeURIComponent(name)}`, { method: 'DELETE' });
+  },
+  listSkillVersions(agentId: string, name: string): Promise<SkillVersion[]> {
+    return request(`/api/agents/${agentId}/skills/${encodeURIComponent(name)}/versions`);
+  },
+  getSkillVersion(agentId: string, name: string, version: number): Promise<SkillVersion> {
+    return request(`/api/agents/${agentId}/skills/${encodeURIComponent(name)}/versions/${version}`);
+  },
+  snapshotSkill(agentId: string, name: string, note?: string): Promise<{ version: number }> {
+    return request(`/api/agents/${agentId}/skills/${encodeURIComponent(name)}/versions`, {
+      method: 'POST', body: JSON.stringify({ note: note || '' }),
+    });
+  },
+  rollbackSkill(agentId: string, name: string, version: number): Promise<SkillRec> {
+    return request(`/api/agents/${agentId}/skills/${encodeURIComponent(name)}/versions/${version}/rollback`, {
+      method: 'POST',
+    });
   },
 
   listSessions(): Promise<SessionInfo[]> {

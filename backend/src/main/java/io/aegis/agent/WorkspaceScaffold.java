@@ -56,8 +56,9 @@ public final class WorkspaceScaffold {
         if (toolsJson != null) {
             Files.writeString(ws.resolve("tools.json"), toolsJson);
         }
+        // Frontmatter is REQUIRED — the framework skips SKILL.md without name/description.
         Files.writeString(ws.resolve("skills/example-skill/SKILL.md"),
-                "# Example skill\n\nA starter placeholder skill.\n");
+                "---\nname: example-skill\ndescription: 示例技能，展示 SKILL.md 的标准结构\n---\n\n# Example skill\n\n一个占位技能。在此描述触发场景、步骤和预期输出。\n");
         Files.writeString(ws.resolve("subagents/README.md"), "# Subagents\n\nSub-agent definitions go here.\n");
     }
 }

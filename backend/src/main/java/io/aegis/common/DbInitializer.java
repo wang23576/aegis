@@ -98,6 +98,22 @@ public class DbInitializer {
               status TEXT,
               FOREIGN KEY(session_id) REFERENCES chat_session(id)
             )""");
+        // Skill version history. The active skill itself lives on the filesystem
+        // (workspace/skills/<name>/SKILL.md) so Workspace tab can browse it and the
+        // framework loads it natively; this table only snapshots past revisions.
+        jdbc.execute("""
+            CREATE TABLE IF NOT EXISTS skill_version (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              agent_id TEXT NOT NULL,
+              skill_name TEXT NOT NULL,
+              version INTEGER NOT NULL,
+              description TEXT,
+              content TEXT NOT NULL,
+              saved_at TEXT NOT NULL DEFAULT (datetime('now')),
+              note TEXT,
+              UNIQUE(agent_id, skill_name, version)
+            )""");
+        jdbc.execute("CREATE INDEX IF NOT EXISTS idx_skillver_skill ON skill_version(agent_id, skill_name, version)");
         jdbc.execute("CREATE INDEX IF NOT EXISTS idx_session_user ON chat_session(user_id)");
         jdbc.execute("CREATE INDEX IF NOT EXISTS idx_msg_session ON chat_message(session_id)");
         jdbc.execute("CREATE INDEX IF NOT EXISTS idx_event_session ON chat_event(session_id,seq)");
